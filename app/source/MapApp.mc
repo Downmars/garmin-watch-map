@@ -32,6 +32,7 @@ class MapDelegate extends WatchUi.InputDelegate {
         if (key == WatchUi.KEY_UP) { view.onUp(); return true; }
         if (key == WatchUi.KEY_DOWN) { view.onDown(); return true; }
         if (key == WatchUi.KEY_START || key == 4) { view.onStart(); return true; }
+        if (key == WatchUi.KEY_ESC && view.onBack()) { return true; }
         return false;
     }
 }
@@ -43,11 +44,12 @@ class MapView extends WatchUi.View {
     var prevLat = null;
     var prevLon = null;
     var trail = [];
-    var mode = 0;
+    var browse;
+    var fix;
+    var lastUiStatus = null;
+    var lastUiMinute = null;
     var centerGX = 0;
     var centerGY = 0;
-    var lastPan = 0;
-    var labelUntil = 0;
     var W = 260;
     var H = 260;
     var headingTimer = null;
@@ -58,6 +60,8 @@ class MapView extends WatchUi.View {
 
     function initialize() {
         View.initialize();
+        browse = new BrowseState();
+        fix = new FixState();
         var ds = System.getDeviceSettings();
         if (ds != null) {
             W = ds.screenWidth;
@@ -90,14 +94,21 @@ class MapView extends WatchUi.View {
     }
 
     function onHeadingTick() as Void {
+        var nextStatus = fix.status(System.getTimer());
+        var needsUpdate = nextStatus != lastUiStatus;
+        lastUiStatus = nextStatus;
+        var minute = System.getClockTime().min;
+        if (minute != lastUiMinute) { needsUpdate = true; lastUiMinute = minute; }
         readCompass();
-        if (compass != null && currentSpeed < 0.7) {
+        if (compass != null && currentSpeed < 0.7 && fix.isCurrent(System.getTimer())) {
             var cd = compass - heading;
             while (cd > 180.0) { cd -= 360.0; }
             while (cd < -180.0) { cd += 360.0; }
             heading = heading + cd * 0.4;
-            WatchUi.requestUpdate();
+            // Math.abs is a newer module API and is absent on the tested FR255.
+            if (cd > 1.0 || cd < -1.0) { needsUpdate = true; }
         }
+        if (needsUpdate) { WatchUi.requestUpdate(); }
     }
 
     function lonToGX(lon) {
@@ -105,6 +116,8 @@ class MapView extends WatchUi.View {
     }
 
     function latToGY(lat) {
+        if (lat > 85.05112878) { lat = 85.05112878; }
+        if (lat < -85.05112878) { lat = -85.05112878; }
         var rad = lat * Math.PI / 180.0;
         return (1.0 - Math.log(Math.tan(rad) + 1.0 / Math.cos(rad), 2.718281828459045) / Math.PI) / 2.0 * MapData.WORLD;
     }
@@ -134,9 +147,25 @@ class MapView extends WatchUi.View {
 
     function onPosition(info as Position.Info) as Void {
         var p = info.position;
+        var deg = (p == null) ? null : p.toDegrees();
+        var stamp = (info.when == null) ? null : info.when.value();
+        if (!fix.accept((deg == null) ? null : deg[0], (deg == null) ? null : deg[1],
+                        info.accuracy, stamp, System.getTimer())) {
+            if (!fix.isCurrent(System.getTimer())) { currentSpeed = 0.0; }
+            WatchUi.requestUpdate();
+            return;
+        }
         if (p != null) {
+            if (fix.startsSegment) {
+                lastFixLat = null;
+                lastFixLon = null;
+                prevLat = null;
+                prevLon = null;
+                if (trail.size() > 0 && trail[trail.size() - 1] != null) {
+                    trail.add(null);
+                }
+            }
             loc = p;
-            var deg = p.toDegrees();
             readCompass();
 
             var spd = 0.0;
@@ -197,7 +226,7 @@ class MapView extends WatchUi.View {
 
             // 轨迹：按距离抽稀（8 米一个点），满了丢弃最早的一段而不是整条清空
             var addPoint = true;
-            if (trail.size() > 0) {
+            if (trail.size() > 0 && trail[trail.size() - 1] != null) {
                 var lastP = trail[trail.size() - 1];
                 var dLat0 = (deg[0] - lastP[0]) * Math.PI / 180.0;
                 var dLon0 = (deg[1] - lastP[1]) * Math.PI / 180.0;
@@ -219,7 +248,7 @@ class MapView extends WatchUi.View {
                     trail = nt;
                 }
             }
-            if (System.getTimer() - lastPan > 5000) {
+            if (browse.following) {
                 centerGX = lonToGX(deg[1]);
                 centerGY = latToGY(deg[0]);
             }
@@ -244,12 +273,12 @@ class MapView extends WatchUi.View {
         centerGX += dx;
         centerGY += dy;
         clampCenter();
-        lastPan = System.getTimer();
+        browse.pan();
         WatchUi.requestUpdate();
     }
 
     function onUp() {
-        if (mode == 0) {
+        if (browse.axis == 0) {
             panBy(0, -40);
         } else {
             panBy(-40, 0);
@@ -257,7 +286,7 @@ class MapView extends WatchUi.View {
     }
 
     function onDown() {
-        if (mode == 0) {
+        if (browse.axis == 0) {
             panBy(0, 40);
         } else {
             panBy(40, 0);
@@ -265,9 +294,33 @@ class MapView extends WatchUi.View {
     }
 
     function onStart() {
-        mode = 1 - mode;
-        labelUntil = System.getTimer() + 5000;
+        browse.toggleAxis();
         WatchUi.requestUpdate();
+    }
+
+    function onBack() {
+        if (!browse.backToFollow()) { return false; }
+        centerGX = lonToGX((loc == null) ? MapData.CENTER_LON : fix.longitude);
+        centerGY = latToGY((loc == null) ? MapData.CENTER_LAT : fix.latitude);
+        WatchUi.requestUpdate();
+        return true;
+    }
+
+    function outsideMap() {
+        if (loc == null) { return false; }
+        var gx = lonToGX(fix.longitude);
+        var gy = latToGY(fix.latitude);
+        return gx < MapData.ORIGIN_X || gx >= MapData.ORIGIN_X + MapData.COLS * MapData.TILE ||
+            gy < MapData.ORIGIN_Y || gy >= MapData.ORIGIN_Y + MapData.ROWS * MapData.TILE;
+    }
+
+    function statusText() {
+        var s = fix.status(System.getTimer());
+        if (s == fix.WAITING) { return "等待定位"; }
+        if (s == fix.WEAK) { return "GPS 信号弱"; }
+        if (s == fix.STALE) { return "定位已过期"; }
+        if (outsideMap()) { return "超出地图范围"; }
+        return "GPS 正常";
     }
 
     function drawArrow(dc, sx, sy, rad) {
@@ -342,6 +395,7 @@ class MapView extends WatchUi.View {
         if (trail.size() > 1) {
             dc.setColor(0x8B0000, Graphics.COLOR_TRANSPARENT);
             for (var k = 1; k < trail.size(); k++) {
+                if (trail[k - 1] == null || trail[k] == null) { continue; }
                 var ax = lonToGX(trail[k - 1][1]) - left;
                 var ay = latToGY(trail[k - 1][0]) - top;
                 var bx = lonToGX(trail[k][1]) - left;
@@ -358,12 +412,23 @@ class MapView extends WatchUi.View {
             var sx = lonToGX(deg[1]) - left;
             var sy = latToGY(deg[0]) - top;
             if (sx >= -12 && sx <= W + 12 && sy >= -12 && sy <= H + 12) {
-                drawArrow(dc, sx, sy, heading * Math.PI / 180.0);
+                if (fix.isCurrent(System.getTimer())) {
+                    drawArrow(dc, sx, sy, heading * Math.PI / 180.0);
+                } else {
+                    // Historical position is intentionally not a live direction arrow.
+                    dc.setColor(Graphics.COLOR_DK_GRAY, Graphics.COLOR_TRANSPARENT);
+                    dc.drawCircle(sx, sy, 6);
+                }
             }
-        } else {
-            dc.setColor(Graphics.COLOR_BLACK, Graphics.COLOR_TRANSPARENT);
-            dc.drawText(W / 2, 8, Graphics.FONT_XTINY, "GPS...", Graphics.TEXT_JUSTIFY_CENTER);
         }
+
+        dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_WHITE);
+        dc.fillRectangle(30, 8, W - 60, 33);
+        dc.setColor(Graphics.COLOR_BLACK, Graphics.COLOR_TRANSPARENT);
+        dc.drawText(W / 2, 8, Graphics.FONT_XTINY, statusText(), Graphics.TEXT_JUSTIFY_CENTER);
+        var modeText = (browse.following ? "跟随 " : "浏览 ") +
+            ((browse.axis == 0) ? "上下" : "左右");
+        dc.drawText(W / 2, 24, Graphics.FONT_XTINY, modeText, Graphics.TEXT_JUSTIFY_CENTER);
 
 
         // 小罗盘（屏幕中左侧）
@@ -387,9 +452,5 @@ class MapView extends WatchUi.View {
         var timeText = clock.hour.format("%02d") + ":" + clock.min.format("%02d");
         dc.setColor(Graphics.COLOR_BLACK, Graphics.COLOR_TRANSPARENT);
         dc.drawText(W / 2, H - 34, Graphics.FONT_XTINY, timeText, Graphics.TEXT_JUSTIFY_CENTER);
-        if (System.getTimer() < labelUntil) {
-            dc.setColor(Graphics.COLOR_BLACK, Graphics.COLOR_TRANSPARENT);
-            dc.drawText(W / 2, 24, Graphics.FONT_XTINY, (mode == 0) ? "上下" : "左右", Graphics.TEXT_JUSTIFY_CENTER);
-        }
     }
 }
