@@ -165,6 +165,7 @@ function legacyDoubleSlotStorageRestoresThroughStartupCallbacks(logger as Test.L
     var view = new RecoveryViewSpy(); view.snapshots = store; view.onShow(); driveRecovery(view);
     Test.assertEqual(view.track.size(), 800); Test.assert(!view.recorder.hasSession());
     var bitmap = Graphics.createBufferedBitmap({:width=>260, :height=>260}).get();
+    prepareTestTiles(view);
     view.onUpdate(bitmap.getDc());
     logger.debug("RESTORED_MAP_USED_MEMORY=" + System.getSystemStats().usedMemory);
     Test.assert(System.getSystemStats().usedMemory < 350 * 1024);

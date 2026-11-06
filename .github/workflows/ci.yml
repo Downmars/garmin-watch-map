@@ -51,7 +51,7 @@ jobs:
 
       - name: No generated tiles committed
         run: |
-          if git ls-files | grep -E 'tile_[0-9]+_[0-9]+\.png$'; then
+          if git ls-files | grep -E 'tile_(z[0-9]+_)?[0-9]+_[0-9]+\.png$|app/source/Map(Data|Layers)\.mc$'; then
             echo "::error::generated OSM tiles found in repo (ODbL + size)"
             exit 1
           fi

@@ -5,20 +5,25 @@ Then compile the printed jungle with the local SDK/key and run without /t.
 Never install this synthetic-data harness on a physical watch.
 """
 import json
+import argparse
 from pathlib import Path
 import sys
 import xml.etree.ElementTree as ET
 
+parser = argparse.ArgumentParser()
+parser.add_argument('directory')
+parser.add_argument('--entry', choices=['RecoverySmokeApp', 'ZoomSmokeApp'], default='RecoverySmokeApp')
+args = parser.parse_args()
 repo = Path(__file__).resolve().parents[2]
-out = Path(sys.argv[1]).resolve()
+out = Path(args.directory).resolve()
 out.mkdir(parents=True, exist_ok=True)
 (out / 'resources').mkdir(exist_ok=True)
 ns = 'http://www.garmin.com/xml/connectiq'
 ET.register_namespace('iq', ns)
 manifest = ET.parse(repo / 'app/manifest.xml')
 app = manifest.getroot().find('{' + ns + '}application')
-app.set('id', 'be8ea42c5c014da8a7b16109495f0313')
-app.set('entry', 'RecoverySmokeApp')
+app.set('id', 'be8ea42c5c014da8a7b16109495f0313' if args.entry == 'RecoverySmokeApp' else 'a1c2f6cb7b7c4d97bb48732714c52041')
+app.set('entry', args.entry)
 manifest.write(out / 'manifest.xml', encoding='utf-8', xml_declaration=True)
 records = []
 for seq in (2, 1):

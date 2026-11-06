@@ -20,6 +20,7 @@ tools/*.tar.gz
 app/resources/drawables/tile_*.png
 app/resources/drawables/drawables.xml
 app/source/MapData.mc
+app/source/MapLayers.mc
 app/resources/vec.bin
 maps/
 packs/

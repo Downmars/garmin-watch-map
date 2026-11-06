@@ -48,9 +48,9 @@ class RecoverySmokeView extends MapView {
     }
     function onUpdate(dc) {
         MapView.onUpdate(dc);
-        if (restored && exitTimer == null) {
+        if (restored && !tiles.pending() && exitTimer == null) {
             var ok = track.size() == 800 && track.point(399) == null && track.projectedPoint(399) == null &&
-                     recorder.state == recorder.HISTORY && snapshots.sequence == 2 && !recorder.hasSession();
+                     recorder.state == recorder.HISTORY && snapshots.sequence == 2 && !recorder.hasSession() && !tiles.error;
             System.println(ok ? "RECOVERY_SMOKE_RENDER_PASS" : "RECOVERY_SMOKE_RENDER_FAIL");
             System.println("RECOVERY_SMOKE_MEMORY=" + System.getSystemStats().usedMemory);
             exitTimer = new Timer.Timer(); exitTimer.start(method(:finishSmoke), 200, false);

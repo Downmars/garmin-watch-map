@@ -3,14 +3,18 @@ using Toybox.Test;
 
 class CountingProjectionTrack extends TrackModel {
     var projections = 0;
+    var pairReads = 0;
     function initialize() { TrackModel.initialize(); }
     function project(value) { projections++; return TrackModel.project(value); }
+    function projectedPoint(index) { pairReads++; return TrackModel.projectedPoint(index); }
 }
 class TestProjectedTrack {
     var data;
     function initialize(points) { data = points; }
     function size() { return data.size(); }
     function projectedPoint(i) { return data[i]; }
+    function projectedX(i) { return data[i] == null ? null : data[i][0]; }
+    function projectedY(i) { return data[i] == null ? null : data[i][1]; }
 }
 class CountingTrackDc {
     var lines = 0;
@@ -33,6 +37,7 @@ function panningNeverReprojectsUnchangedTrack(logger as Test.Logger) as Lang.Boo
     }
     Test.assertEqual(t.projections, 2);
     Test.assertEqual(dc.lines, 30); Test.assertEqual(dc.pen, 1);
+    Test.assertEqual(t.pairReads, 0);
     t.append(null); Test.assertEqual(t.projections, 2);
     t.append([34.5002, 109.5]); Test.assertEqual(t.projections, 3);
     return true;
@@ -73,7 +78,7 @@ function rendererPreservesBreaksOffsetsAndEdgeThickness(logger as Test.Logger) a
     var dc = new CountingTrackDc();
     var t = new TestProjectedTrack([[110,210],[150,250],null,[100,260],[200,260]]);
     Test.assertEqual(TrackRenderer.draw(dc, t, 100, 200, 260, 260), 2);
-    Test.assertEqual(dc.lines, 2); Test.assertEqual(dc.lastLine[0], 0); Test.assertEqual(dc.lastLine[1], 60);
+    Test.assertEqual(dc.lines, 2); Test.assertEqual(dc.lastLine[0], 0.0); Test.assertEqual(dc.lastLine[1], 60.0);
     Test.assertEqual(TrackRenderer.draw(dc, new TestProjectedTrack([[-1,10],[-1,20]]), 0, 0, 260, 260), 1);
     Test.assertEqual(TrackRenderer.draw(dc, new TestProjectedTrack([null,[10,10],null]), 0, 0, 260, 260), 0);
     return true;

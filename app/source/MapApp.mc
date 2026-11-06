@@ -77,6 +77,11 @@ class MapView extends WatchUi.View {
     var H = 260;
     var headingTimer = null;
     var currentSpeed = 0.0;
+    var levelIndex = 0;
+    var tiles;
+    var tileTimer = null;
+    var active = false;
+    var scaleBar;
 
     function initialize() {
         View.initialize();
@@ -90,16 +95,19 @@ class MapView extends WatchUi.View {
             W = ds.screenWidth;
             H = ds.screenHeight;
         }
-        // Center comes from the generated MapData.mc (set by build-city.bat),
+        // Center comes from the generated MapData.mc (set by build-weinan.ps1),
         // so switching city needs no edit in this file.
         centerGX = lonToGX(MapData.CENTER_LON);
         centerGY = latToGY(MapData.CENTER_LAT);
+        tiles = new MapTileCache();
+        queueMapTiles();
     }
 
     function onLayout(dc) {
     }
 
     function onShow() {
+        active = true;
         if (!restored) {
             if (!recovering) { restoreSnapshot(); }
             if (recoveryTimer == null) {
@@ -114,6 +122,7 @@ class MapView extends WatchUi.View {
     function createRecoveryTimer() { return new Timer.Timer(); }
 
     function startLiveUpdates() {
+        queueMapTiles();
         Position.enableLocationEvents(Position.LOCATION_CONTINUOUS, method(:onPosition));
         // 1 秒节拍：静止时也能靠罗盘实时转头，不必等 GPS 回调
         if (headingTimer == null) {
@@ -123,6 +132,8 @@ class MapView extends WatchUi.View {
     }
 
     function onHide() {
+        active = false;
+        if (tileTimer != null) { tileTimer.stop(); tileTimer = null; }
         if (recoveryTimer != null) { recoveryTimer.stop(); recoveryTimer = null; }
         if (headingTimer != null) {
             headingTimer.stop();
@@ -242,10 +253,7 @@ class MapView extends WatchUi.View {
             if (recorder.canAccumulate()) {
                 track.accept(deg[0], deg[1], fix.startsSegment);
             } else { track.breakSegment(); }
-            if (browse.following) {
-                centerGX = lonToGX(deg[1]);
-                centerGY = latToGY(deg[0]);
-            }
+            followPosition(deg[0], deg[1]);
             WatchUi.requestUpdate();
         }
     }
@@ -264,16 +272,18 @@ class MapView extends WatchUi.View {
     }
 
     function panBy(dx, dy) {
-        centerGX += dx;
-        centerGY += dy;
+        centerGX += dx / mapScale();
+        centerGY += dy / mapScale();
         clampCenter();
         browse.pan();
+        queueMapTiles();
         WatchUi.requestUpdate();
     }
 
     function onUp() {
         if (recovering) { return; }
         if (menuOpen) { menuIndex = (menuIndex + menuRows.size() - 1) % menuRows.size(); WatchUi.requestUpdate(); return; }
+        if (browse.axis == 2) { zoomTo(levelIndex - 1); return; }
         if (browse.axis == 0) {
             panBy(0, -40);
         } else {
@@ -284,6 +294,7 @@ class MapView extends WatchUi.View {
     function onDown() {
         if (recovering) { return; }
         if (menuOpen) { menuIndex = (menuIndex + 1) % menuRows.size(); WatchUi.requestUpdate(); return; }
+        if (browse.axis == 2) { zoomTo(levelIndex + 1); return; }
         if (browse.axis == 0) {
             panBy(0, 40);
         } else {
@@ -306,8 +317,53 @@ class MapView extends WatchUi.View {
         if (!browse.backToFollow()) { openMenu(); return true; }
         centerGX = lonToGX((loc == null) ? MapData.CENTER_LON : fix.longitude);
         centerGY = latToGY((loc == null) ? MapData.CENTER_LAT : fix.latitude);
+        clampCenter(); queueMapTiles();
         WatchUi.requestUpdate();
         return true;
+    }
+
+    function mapScale() { return MapLayers.ALL[levelIndex][1]; }
+
+    function followPosition(lat, lon) {
+        if (!browse.following) { return; }
+        centerGX = lonToGX(lon); centerGY = latToGY(lat);
+        clampCenter(); queueMapTiles();
+    }
+
+    function zoomTo(next) {
+        if (next < 0) { next = 0; }
+        if (next >= MapLayers.ALL.size()) { next = MapLayers.ALL.size() - 1; }
+        if (next != levelIndex) { levelIndex = next; queueMapTiles(); }
+        WatchUi.requestUpdate();
+    }
+
+    function queueMapTiles() {
+        var scale = mapScale();
+        tiles.prepare(levelIndex, MapLayers.ALL[levelIndex], centerGX * scale - W / 2.0,
+            centerGY * scale - H / 2.0, W, H);
+        scaleBar = MapTiles.scaleBar(centerGY, scale);
+        if (active && !recovering && tiles.pending() && tileTimer == null) {
+            tileTimer = new Timer.Timer(); tileTimer.start(method(:onTileTick), 50, true);
+        }
+    }
+
+    function onTileTick() as Void {
+        if (!active || recovering) { return; }
+        tiles.step();
+        if (!tiles.pending() && tileTimer != null) { tileTimer.stop(); tileTimer = null; }
+        WatchUi.requestUpdate();
+    }
+
+    function drawScaleBar(dc) {
+        var cx = W - 60; var cy = H / 2;
+        dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_WHITE);
+        dc.fillRectangle(cx - 42, cy - 25, 84, 42);
+        dc.setColor(Graphics.COLOR_BLACK, Graphics.COLOR_TRANSPARENT);
+        dc.drawText(cx, cy - 23, Graphics.FONT_XTINY, scaleBar[2], Graphics.TEXT_JUSTIFY_CENTER);
+        var x = cx - scaleBar[1] / 2;
+        dc.drawLine(x, cy + 6, x + scaleBar[1], cy + 6);
+        dc.drawLine(x, cy + 3, x, cy + 9);
+        dc.drawLine(x + scaleBar[1], cy + 3, x + scaleBar[1], cy + 9);
     }
 
 
@@ -540,32 +596,28 @@ class MapView extends WatchUi.View {
         }
         if (menuOpen) { drawMenu(dc); return; }
         clampCenter();
-        var left = centerGX - W / 2.0;
-        var top = centerGY - H / 2.0;
+        var scale = mapScale();
+        var left = centerGX - W / (2.0 * scale);
+        var top = centerGY - H / (2.0 * scale);
 
-        dc.setColor(Graphics.COLOR_BLACK, Graphics.COLOR_BLACK);
+        dc.setColor(Graphics.COLOR_LT_GRAY, Graphics.COLOR_LT_GRAY);
         dc.clear();
 
-        for (var j = 0; j < MapData.ROWS; j++) {
-            for (var i = 0; i < MapData.COLS; i++) {
-                var x = MapData.ORIGIN_X + i * MapData.TILE - left;
-                var y = MapData.ORIGIN_Y + j * MapData.TILE - top;
-                if (x <= -MapData.TILE || x >= W || y <= -MapData.TILE || y >= H) {
-                    continue;
-                }
-                var bmp = WatchUi.loadResource(MapData.ALL[j * MapData.COLS + i]);
-                if (bmp != null) {
-                    dc.drawBitmap(x, y, bmp);
-                }
-            }
-        }
-
-        TrackRenderer.draw(dc, track, left, top, W, H);
+        var clipX = (MapData.ORIGIN_X - left) * scale;
+        var clipY = (MapData.ORIGIN_Y - top) * scale;
+        var clipRight = clipX + MapData.COLS * 512 * scale;
+        var clipBottom = clipY + MapData.ROWS * 512 * scale;
+        if (clipX < 0) { clipX = 0; } if (clipY < 0) { clipY = 0; }
+        if (clipRight > W) { clipRight = W; } if (clipBottom > H) { clipBottom = H; }
+        dc.setClip(clipX, clipY, clipRight - clipX, clipBottom - clipY);
+        tiles.draw(dc, left * scale, top * scale);
+        dc.clearClip();
+        TrackRenderer.drawScaled(dc, track, left, top, W, H, scale);
 
         if (loc != null) {
             var deg = loc.toDegrees();
-            var sx = lonToGX(deg[1]) - left;
-            var sy = latToGY(deg[0]) - top;
+            var sx = (lonToGX(deg[1]) - left) * scale;
+            var sy = (latToGY(deg[0]) - top) * scale;
             if (sx >= -12 && sx <= W + 12 && sy >= -12 && sy <= H + 12) {
                 if (fix.isCurrent(System.getTimer())) {
                     drawArrow(dc, sx, sy, heading * Math.PI / 180.0);
@@ -582,16 +634,22 @@ class MapView extends WatchUi.View {
         dc.setColor(Graphics.COLOR_BLACK, Graphics.COLOR_TRANSPARENT);
         dc.drawText(W / 2, 8, Graphics.FONT_XTINY, statusText(), Graphics.TEXT_JUSTIFY_CENTER);
         var modeText = (browse.following ? "跟随 " : "浏览 ") +
-            ((browse.axis == 0) ? "上下" : "左右");
+            ((browse.axis == 0) ? "上下" : (browse.axis == 1 ? "左右" : "缩放")) +
+            (levelIndex == 0 ? "·街道" : "·概览");
         dc.drawText(W / 2, 24, Graphics.FONT_XTINY, modeText, Graphics.TEXT_JUSTIFY_CENTER);
 
 
         // 小罗盘（屏幕中左侧）
         drawCompass(dc);
+        drawScaleBar(dc);
 
         // 地图来源署名保持可见。
         dc.setColor(Graphics.COLOR_BLACK, Graphics.COLOR_TRANSPARENT);
         dc.drawText(W / 2, 44, Graphics.FONT_XTINY, "(c) OSM contributors", Graphics.TEXT_JUSTIFY_CENTER);
+        if (tiles.pending() || tiles.error) {
+            dc.setColor(Graphics.COLOR_BLACK, Graphics.COLOR_WHITE);
+            dc.drawText(W / 2, 65, Graphics.FONT_XTINY, tiles.error ? "底图暂不可用" : "载入底图", Graphics.TEXT_JUSTIFY_CENTER);
+        }
 
         if (notice != null) {
             dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_WHITE);

@@ -12,22 +12,37 @@ class TrackModel {
     var pendingBreak = true;
     var revision = 0;
 
-    function initialize() { points = new [CAPACITY]; projected = new [CAPACITY]; }
+    function initialize() { points = new [CAPACITY * 2]; projected = new [CAPACITY * 2]; }
     function clear() {
-        points = new [CAPACITY]; projected = new [CAPACITY]; head = 0; count = 0; distance = 0.0;
+        points = new [CAPACITY * 2]; projected = new [CAPACITY * 2]; head = 0; count = 0; distance = 0.0;
         previous = null; pendingBreak = true; revision++;
     }
     function size() { return count; }
-    function point(index) { return points[(head + index) % CAPACITY]; }
-    function projectedPoint(index) { return projected[(head + index) % CAPACITY]; }
+    // Flat ring buffers avoid retaining two small Array objects for every entry.
+    function point(index) {
+        var offset = ((head + index) % CAPACITY) * 2;
+        return points[offset] == null ? null : [points[offset], points[offset + 1]];
+    }
+    function projectedX(index) { return projected[((head + index) % CAPACITY) * 2]; }
+    function projectedY(index) { return projected[((head + index) % CAPACITY) * 2 + 1]; }
+    function projectedPoint(index) {
+        var x = projectedX(index);
+        return x == null ? null : [x, projectedY(index)];
+    }
     function project(value) { return MapProjection.point(value[0], value[1]); }
     function append(value) {
         var slot = (head + count) % CAPACITY;
         if (count < CAPACITY) { count++; }
         else { head = (head + 1) % CAPACITY; }
-        points[slot] = value;
-        // Fixed-capacity render cache; raw coordinates and persistence stay unchanged.
-        projected[slot] = value == null ? null : project(value);
+        var offset = slot * 2;
+        if (value == null) {
+            points[offset] = null; points[offset + 1] = null;
+            projected[offset] = null; projected[offset + 1] = null;
+        } else {
+            points[offset] = value[0]; points[offset + 1] = value[1];
+            var p = project(value);
+            projected[offset] = p[0]; projected[offset + 1] = p[1];
+        }
         revision++;
     }
     function breakSegment() { previous = null; pendingBreak = true; }
@@ -53,9 +68,10 @@ class TrackModel {
     function exportPoints() {
         var data = [];
         for (var i = 0; i < count; i++) {
-            var p = point(i);
-            data.add(p == null ? null : (p[0] * 100000.0).toNumber());
-            data.add(p == null ? null : (p[1] * 100000.0).toNumber());
+            var offset = ((head + i) % CAPACITY) * 2;
+            var lat = points[offset]; var lon = points[offset + 1];
+            data.add(lat == null ? null : (lat * 100000.0).toNumber());
+            data.add(lon == null ? null : (lon * 100000.0).toNumber());
         }
         return data;
     }

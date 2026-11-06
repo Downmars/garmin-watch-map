@@ -31,13 +31,15 @@ try {
     $env:TMP = $env:TEMP
     $env:PYTHONUTF8 = '1'
     if (-not $CompileOnly) {
-        $mapArgs = @('tools\make_city_pack.py', '--name', 'weinan', '--lat', $Lat, '--lon', $Lon,
-            '--km', $Km, '--zoom', $Zoom, '--outdir', 'maps\weinan', '--tiles-only')
+        if ($Zoom -ne 15) { throw 'The two-level build uses z15 and z13; omit -Zoom or use 15.' }
+        $mapArgs = @('tools\make_multilevel_pack.py', '--lat', $Lat, '--lon', $Lon,
+            '--km', $Km, '--outdir', 'maps\weinan-multilevel')
         if ($Direct) { $mapArgs += '--direct' }
         & $pythonExe @mapArgs
         if ($LASTEXITCODE -ne 0) { throw 'Map generation failed; rerun to resume cached downloads.' }
     }
     if (-not (Test-Path 'app\source\MapData.mc')) { throw 'No generated map. Run without -CompileOnly first.' }
+    if (-not (Test-Path 'app\source\MapLayers.mc')) { throw 'No generated map levels. Run without -CompileOnly first.' }
     $jungle = if ($TestBuild) { 'test.jungle' } else { 'app\monkey.jungle' }
     $compileArgs = @('-Xmx4g', '-Dfile.encoding=UTF-8', '-jar', (Join-Path $sdkRoot 'bin\monkeybrains.jar'),
         '-f', $jungle, '-o', $OutFile, '-d', 'fr255', '-y', $keyFile, '-w')
