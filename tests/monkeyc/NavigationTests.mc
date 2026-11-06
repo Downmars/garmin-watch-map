@@ -111,6 +111,8 @@ function browserBackRecentersBeforeExit(logger as Test.Logger) as Lang.Boolean {
     Test.assertEqual(b.axis, 1);
     b.toggleAxis();
     Test.assert(!b.following);
+    Test.assertEqual(b.axis, 2);
+    b.toggleAxis();
     Test.assertEqual(b.axis, 0);
     Test.assert(b.backToFollow());
     Test.assert(b.following);

@@ -247,6 +247,7 @@ function fullMapAndLongTrackRenderWithinDeviceBudget(logger as Test.Logger) as L
     var view = new MapView();
     for (var i = 0; i < 800; i++) { view.track.append([34.5 + (i % 20) * 0.00001, 109.5]); }
     var bitmap = Graphics.createBufferedBitmap({:width=>260, :height=>260}).get();
+    prepareTestTiles(view);
     view.onUpdate(bitmap.getDc());
     logger.debug("MAP_RENDER_USED_MEMORY=" + System.getSystemStats().usedMemory);
     Test.assert(System.getSystemStats().usedMemory < 350 * 1024);

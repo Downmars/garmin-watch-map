@@ -4,8 +4,8 @@
 
 这是最常见的需求，**不需要 fork 或提 PR**：
 
-```bat
-build-city.bat --name yourcity --lat 30.5728 --lon 104.0668 --km 20 --zoom 15
+```powershell
+.\build-weinan.ps1 -Lat 30.5728 -Lon 104.0668 -Km 20 -OutFile dist\yourcity.prg
 ```
 
 生成的 `dist\yourcity.prg` 直接拷到手表 `GARMIN\Apps\` 就能用。
@@ -19,11 +19,11 @@ build-city.bat --name yourcity --lat 30.5728 --lon 104.0668 --km 20 --zoom 15
 
 ### 1. 本地能构建通过
 
-```bat
-build-city.bat --name smoke --lat 36.10 --lon 120.43 --km 2 --zoom 15
+```powershell
+.\build-weinan.ps1 -Lat 36.10 -Lon 120.43 -Km 2 -OutFile dist\smoke.prg
 ```
 
-必须看到 `BUILD SUCCESSFUL` 才算通过。用 `--km 2` 的小包做冒烟测试，
+必须看到 `BUILD SUCCESSFUL` 才算编译通过，还需运行相应测试。用 `-Km 2` 的小包做冒烟测试，
 别用整个城市来验证（慢且触发 OSM 限流）。
 
 ### 2. 不要提交这些
@@ -34,6 +34,7 @@ build-city.bat --name smoke --lat 36.10 --lon 120.43 --km 2 --zoom 15
 | `dist/*.prg` | 编译产物 |
 | `app/resources/drawables/tile_*.png` | OSM 瓦片，版权 + 体积 |
 | `app/source/MapData.mc` | 构建时按坐标生成 |
+| `app/source/MapLayers.mc` | 构建时生成双级资源描述 |
 | `appdata/`、`temp/` | SDK 与缓存 |
 
 `.gitignore` 已经覆盖，但 `git add -f` 之前请想清楚。
@@ -55,14 +56,15 @@ PR 描述里写：
 | `app/source/MapApp.mc` | 离线地图渲染、GPS 轨迹、方向箭头、平移 |
 | `online/source/OnlineApp.mc` | 在线地图（运行时拉瓦片） |
 | `app-field/source/MapField.mc` | 运动数据字段版 |
-| `tools/make_city_pack.py` | 主流水线：算瓦片范围 → 下载 → 拼接 → 生成资源 → 编译 |
+| `tools/make_multilevel_pack.py` | v0.4 双级范围、下载、拼接、资源描述；由 build-weinan.ps1 编译 |
+| `tools/make_city_pack.py` | 复用其下载缓存/校验函数；旧单层命令不用于 v0.4 app |
 | `tools/gen_tiles.py` | 瓦片下载（重试 + 镜像回退 + 灰色占位） |
 | `tools/make_icon_final.py` | 图标渲染（320px 渲染后降采样到 40px） |
 
 ### 关键常量
 
 - 瓦片是世界坐标（Web Mercator）的 512px 图片，`MapData.ORIGIN_X/Y` 是最左上角的全局像素坐标
-- `MapData.WORLD` = `256 << zoom`，所有经纬度换算都基于它
+- `MapData.WORLD` 固定为 `256 << 15`，轨迹与视口保存 z15 坐标；z13 绘制乘以 1/4
 - 中心点来自 `MapData.CENTER_LAT/LON`（构建时写入），**不要在 `MapApp.mc` 里写死坐标**
 
 ---
