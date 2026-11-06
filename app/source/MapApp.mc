@@ -54,6 +54,7 @@ class MapView extends WatchUi.View {
     var lastFixLat = null;
     var lastFixLon = null;
     var distM = 0.0;
+    var currentSpeed = 0.0;
 
     function initialize() {
         View.initialize();
@@ -90,7 +91,7 @@ class MapView extends WatchUi.View {
 
     function onHeadingTick() as Void {
         readCompass();
-        if (compass != null) {
+        if (compass != null && currentSpeed < 0.7) {
             var cd = compass - heading;
             while (cd > 180.0) { cd -= 360.0; }
             while (cd < -180.0) { cd += 360.0; }
@@ -140,16 +141,17 @@ class MapView extends WatchUi.View {
 
             var spd = 0.0;
             try {
-                spd = info.speed;
+                if (info.speed != null) { spd = info.speed; }
             } catch (e) {
                 spd = 0.0;
             }
+            currentSpeed = spd;
 
             // 累计里程：相邻两点距离累加，单段超过 50 米视为跳点丢弃
             if (lastFixLat != null) {
                 var sLat = (deg[0] - lastFixLat) * Math.PI / 180.0;
                 var sLon = (deg[1] - lastFixLon) * Math.PI / 180.0;
-                var mD = 6371000.0 * Math.PI / 180.0;
+                var mD = 6371000.0;
                 var sy = sLat * mD;
                 var sx = sLon * mD * Math.cos(deg[0] * Math.PI / 180.0);
                 var seg = Math.pow(sy * sy + sx * sx, 0.5);
@@ -167,7 +169,7 @@ class MapView extends WatchUi.View {
             } else {
                 var dLat = (deg[0] - prevLat) * Math.PI / 180.0;
                 var dLon = (deg[1] - prevLon) * Math.PI / 180.0;
-                var mPerDeg = 6371000.0 * Math.PI / 180.0;
+                var mPerDeg = 6371000.0;
                 var dy = dLat * mPerDeg;
                 var dx = dLon * mPerDeg * Math.cos(deg[0] * Math.PI / 180.0);
                 if (dy * dy + dx * dx > 64.0) {
@@ -199,7 +201,7 @@ class MapView extends WatchUi.View {
                 var lastP = trail[trail.size() - 1];
                 var dLat0 = (deg[0] - lastP[0]) * Math.PI / 180.0;
                 var dLon0 = (deg[1] - lastP[1]) * Math.PI / 180.0;
-                var mD0 = 6371000.0 * Math.PI / 180.0;
+                var mD0 = 6371000.0;
                 var ey = dLat0 * mD0;
                 var ex = dLon0 * mD0 * Math.cos(deg[0] * Math.PI / 180.0);
                 if (ey * ey + ex * ex < 64.0) {
@@ -367,16 +369,9 @@ class MapView extends WatchUi.View {
         // 小罗盘（屏幕中左侧）
         drawCompass(dc);
 
-        // 临时诊断行：罗盘方位 + 轨迹点数（确认罗盘是否真的在读数）
-        var dbg = "v3 H";
-        if (compass != null) {
-            dbg = dbg + compass.toNumber().toString();
-        } else {
-            dbg = dbg + "--";
-        }
-        dbg = dbg + " T" + trail.size().toString();
+        // 地图来源署名保持可见。
         dc.setColor(Graphics.COLOR_BLACK, Graphics.COLOR_TRANSPARENT);
-        dc.drawText(W / 2, 44, Graphics.FONT_XTINY, dbg, Graphics.TEXT_JUSTIFY_CENTER);
+        dc.drawText(W / 2, 44, Graphics.FONT_XTINY, "(c) OSM contributors", Graphics.TEXT_JUSTIFY_CENTER);
 
         // 累计里程
         var distText;

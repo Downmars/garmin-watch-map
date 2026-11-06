@@ -9,6 +9,7 @@
 """
 import argparse
 import io
+import json
 import math
 import os
 import shutil
@@ -22,7 +23,7 @@ from PIL import Image
 TILE_SIZE = 512
 Z_TILE = 256
 HOSTS = ("a", "b", "c")
-UA = "offline-map-builder/1.0"
+UA = "garmin-watch-map/1.1 (+https://github.com/cc2994358194-create/garmin-watch-map)"
 
 
 def lon_to_x(lon, z):
@@ -34,9 +35,17 @@ def lat_to_y(lat, z):
     return (1.0 - math.log(math.tan(rad) + 1.0 / math.cos(rad)) / math.pi) / 2.0 * (Z_TILE << z)
 
 
-def fetch_tile(z, x, y, cache, retries=3):
+def fetch_tile(z, x, y, cache, retries=3, cache_dir=None):
     key = (z, x, y)
     if key in cache:
+        return cache[key]
+    disk = os.path.join(cache_dir, str(z), str(x), f"{y}.png") if cache_dir else None
+    if disk and os.path.isfile(disk):
+        with Image.open(disk) as saved:
+            saved.load()
+            if saved.size != (Z_TILE, Z_TILE):
+                raise ValueError(f"Invalid cached tile size: {disk}")
+            cache[key] = saved.convert("RGB")
         return cache[key]
     last = None
     for host in HOSTS:
@@ -46,27 +55,32 @@ def fetch_tile(z, x, y, cache, retries=3):
                 req = urllib.request.Request(url, headers={"User-Agent": UA})
                 with urllib.request.urlopen(req, timeout=25) as resp:
                     img = Image.open(io.BytesIO(resp.read())).convert("RGB")
+                if img.size != (Z_TILE, Z_TILE):
+                    raise ValueError(f"Invalid tile size from {url}: {img.size}")
+                if disk:
+                    os.makedirs(os.path.dirname(disk), exist_ok=True)
+                    img.save(disk + ".tmp", "PNG")
+                    os.replace(disk + ".tmp", disk)
                 cache[key] = img
+                time.sleep(0.25)
                 return img
             except Exception as exc:  # noqa: BLE001
                 last = exc
                 time.sleep(1 + attempt)
-    print(f"  ! fail {z}/{x}/{y}: {last}")
-    img = Image.new("RGB", (Z_TILE, Z_TILE), (232, 232, 228))
-    cache[key] = img
-    return img
+    raise RuntimeError(f"Tile download failed {z}/{x}/{y}: {last}. Rerun to resume from cache.") from last
 
 
-def build_tiles(lat, lon, km, zoom, outdir, cache):
+def build_tiles(lat, lon, km, zoom, outdir, cache, cache_dir=None):
     world = Z_TILE << zoom
     mpp = 156543.03392 * math.cos(math.radians(lat)) / (2 ** zoom)
-    span_m = TILE_SIZE * mpp
-    cols = max(1, int(math.ceil(km * 1000.0 / span_m)))
-    rows = cols
     cx = lon_to_x(lon, zoom)
     cy = lat_to_y(lat, zoom)
-    gx0 = int(math.floor((cx - cols * TILE_SIZE / 2.0) / TILE_SIZE) * TILE_SIZE)
-    gy0 = int(math.floor((cy - rows * TILE_SIZE / 2.0) / TILE_SIZE) * TILE_SIZE)
+    half = km * 1000.0 / mpp / 2.0
+    gx0 = int(math.floor((cx - half) / TILE_SIZE) * TILE_SIZE)
+    gy0 = int(math.floor((cy - half) / TILE_SIZE) * TILE_SIZE)
+    cols = int(math.ceil((cx + half - gx0) / TILE_SIZE))
+    rows = int(math.ceil((cy + half - gy0) / TILE_SIZE))
+    print(f"      {cols}x{rows} map images, {cols * rows * 4} source tiles", flush=True)
 
     os.makedirs(outdir, exist_ok=True)
     names = []
@@ -77,10 +91,11 @@ def build_tiles(lat, lon, km, zoom, outdir, cache):
             canvas = Image.new("RGB", (TILE_SIZE, TILE_SIZE))
             for b in range(2):
                 for a in range(2):
-                    canvas.paste(fetch_tile(zoom, tx + a, ty + b, cache), (a * Z_TILE, b * Z_TILE))
+                    canvas.paste(fetch_tile(zoom, tx + a, ty + b, cache, cache_dir=cache_dir), (a * Z_TILE, b * Z_TILE))
             fn = f"tile_{j}_{i}.png"
             canvas.save(os.path.join(outdir, fn), "PNG", optimize=True)
             names.append(fn)
+            print(f"      [{len(names)}/{cols * rows}] {fn}", flush=True)
     return gx0, gy0, cols, rows, names, mpp
 
 
@@ -97,7 +112,7 @@ def emit_sources(app_dir, gx0, gy0, cols, rows, names, mpp, outdir, world, lat, 
         shutil.copyfile(os.path.join(outdir, fn), os.path.join(res, fn))
 
     tile_lines = "".join(
-        f"    const TILE_{j}_{i} = Rez.Drawables.Tile{j}{i};\n" for j in range(rows) for i in range(cols)
+        f"    const TILE_{j}_{i} = Rez.Drawables.Tile_{j}_{i};\n" for j in range(rows) for i in range(cols)
     )
     all_entries = "".join(f"        TILE_{j}_{i},\n" for j in range(rows) for i in range(cols))
     scale_m = round(60 * mpp)
@@ -127,7 +142,7 @@ def emit_sources(app_dir, gx0, gy0, cols, rows, names, mpp, outdir, world, lat, 
     xml = ["<drawables>\n"]
     for j in range(rows):
         for i in range(cols):
-            xml.append(f'  <bitmap id="Tile{j}{i}" filename="tile_{j}_{i}.png"/>\n')
+            xml.append(f'  <bitmap id="Tile_{j}_{i}" filename="tile_{j}_{i}.png" compress="true"/>\n')
     xml.append('  <bitmap id="LauncherIcon" filename="launcher.png"/>\n</drawables>\n')
     with open(os.path.join(res, "drawables.xml"), "w", encoding="utf-8") as fh:
         fh.write("".join(xml))
@@ -150,7 +165,7 @@ def _device_data_root(sdk_dir):
     return None
 
 
-def compile_app(app_dir, sdk_dir, key, out_prg):
+def compile_app(app_dir, sdk_dir, key, out_prg, device="fr255"):
     os.makedirs(os.path.dirname(out_prg) or ".", exist_ok=True)
     env = dict(os.environ)
     env["_JAVA_OPTIONS"] = "-Xmx4g"
@@ -166,7 +181,7 @@ def compile_app(app_dir, sdk_dir, key, out_prg):
     if not os.path.isfile(monkeyc):
         monkeyc = os.path.join(sdk_dir, "bin", "monkeyc")
     cmd = [monkeyc, "-f", os.path.join(app_dir, "monkey.jungle"),
-           "-o", out_prg, "-d", ARGS.device, "-y", key]
+           "-o", out_prg, "-d", device, "-y", key]
     print("compile:", " ".join(cmd))
     subprocess.check_call(cmd, env=env)
 
@@ -182,22 +197,44 @@ def main():
     ap.add_argument("--app", default="app", help="CIQ 工程目录")
     ap.add_argument("--outdir", default="maps")
     ap.add_argument("--out", default="", help="输出 .prg 路径")
-    ap.add_argument("--sdk", required=True, help="Connect IQ SDK 目录")
-    ap.add_argument("--key", required=True, help="developer_key.der")
+    ap.add_argument("--sdk", help="Connect IQ SDK 目录")
+    ap.add_argument("--key", help="developer_key.der")
     ap.add_argument("--device", default="fr255")
+    ap.add_argument("--tiles-only", action="store_true", help="只生成地图与资源，不编译")
+    ap.add_argument("--cache-dir", default="maps/cache/hot", help="原始瓦片持久缓存目录")
+    ap.add_argument("--direct", action="store_true", help="本次下载不使用系统代理")
     ARGS = ap.parse_args()
+    if not (-85 < ARGS.lat < 85 and -180 <= ARGS.lon <= 180 and 1 <= ARGS.zoom <= 19 and ARGS.km > 0):
+        ap.error("Invalid latitude, longitude, zoom or coverage size")
+    if not ARGS.tiles_only:
+        if not ARGS.sdk or not os.path.isfile(os.path.join(ARGS.sdk, "bin", "monkeybrains.jar")):
+            ap.error("Provide --sdk pointing to an installed Connect IQ SDK")
+        if not ARGS.key or not os.path.isfile(ARGS.key):
+            ap.error("Provide --key pointing to a developer signing key")
+    if ARGS.direct:
+        urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))
 
     out_prg = ARGS.out or os.path.join("dist", f"{ARGS.name}.prg")
     cache = {}
     print(f"[1/3] 生成瓦片 {ARGS.name}: {ARGS.km}km @z{ARGS.zoom}")
-    gx0, gy0, cols, rows, names, mpp = build_tiles(ARGS.lat, ARGS.lon, ARGS.km, ARGS.zoom, ARGS.outdir, cache)
+    gx0, gy0, cols, rows, names, mpp = build_tiles(ARGS.lat, ARGS.lon, ARGS.km, ARGS.zoom, ARGS.outdir, cache, ARGS.cache_dir)
     print(f"      {cols}x{rows} = {cols * rows} 张，约 {mpp:.2f} m/px")
 
     print("[2/3] 生成资源")
     emit_sources(ARGS.app, gx0, gy0, cols, rows, names, mpp, ARGS.outdir, Z_TILE << ARGS.zoom, ARGS.lat, ARGS.lon)
+    metadata = dict(name=ARGS.name, center_lat=ARGS.lat, center_lon=ARGS.lon,
+                    requested_km=ARGS.km, zoom=ARGS.zoom, origin_x=gx0, origin_y=gy0,
+                    cols=cols, rows=rows, tile_pixels=TILE_SIZE, meters_per_pixel=mpp,
+                    source="OpenStreetMap France HOT", attribution="Map data (c) OpenStreetMap contributors, ODbL; tiles (c) OpenStreetMap France, CC BY-SA 2.0",
+                    tiles=names)
+    with open(os.path.join(ARGS.outdir, "metadata.json"), "w", encoding="utf-8") as fh:
+        json.dump(metadata, fh, ensure_ascii=False, indent=2)
+    if ARGS.tiles_only:
+        print("Map resources ready; compilation skipped.")
+        return
 
     print("[3/3] 编译")
-    compile_app(ARGS.app, ARGS.sdk, ARGS.key, out_prg)
+    compile_app(ARGS.app, ARGS.sdk, ARGS.key, out_prg, ARGS.device)
     size = os.path.getsize(out_prg) / 1e6
     print(f"完成: {out_prg} ({size:.1f} MB)")
 
