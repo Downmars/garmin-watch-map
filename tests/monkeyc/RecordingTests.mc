@@ -33,11 +33,21 @@ class MemorySnapshots extends SnapshotStore {
     var data = {};
     var writeFail = false;
     function initialize() { SnapshotStore.initialize("test."); }
+    function load() { return finishSnapshotLoad(self); }
     function readValue(key) { return data.get(key); }
     function writeValue(key, value) {
         if (writeFail) { throw new Lang.InvalidValueException("injected storage failure"); }
         data.put(key, value);
     }
+}
+
+// Tests may drain a loader synchronously; production must return between steps.
+function finishSnapshotLoad(store) {
+    var loader = new SnapshotLoader(store);
+    for (var step = 0; step < 100; step++) {
+        if (loader.step()) { return loader.takeResult(); }
+    }
+    Test.assert(false); return null;
 }
 
 (:test)
@@ -146,7 +156,7 @@ function fullTrackFitsRealDoubleSlotStorage(logger as Test.Logger) as Lang.Boole
     var store = new SnapshotStore(key); var t = new TrackModel();
     for (var i = 0; i < 800; i++) { t.append([34.5 + i * 0.00001, 109.5]); }
     Test.assert(store.save(t, 7200000, 2)); Test.assert(store.save(t, 7200000, 3));
-    var restored = new TrackModel(); var data = new SnapshotStore(key).load();
+    var restored = new TrackModel(); var data = finishSnapshotLoad(new SnapshotStore(key));
     Test.assert(data != null); restored.restore(data[6], data[2]);
     Test.assertEqual(restored.size(), 800); Test.assertEqual(data[3], 7200);
     logger.debug("MODEL_STORAGE_USED_MEMORY=" + System.getSystemStats().usedMemory);
@@ -224,6 +234,8 @@ function restoredTrackDoesNotPretendToResumeFit(logger as Test.Logger) as Lang.B
     var store = new MemorySnapshots(); var track = new TrackModel();
     track.accept(34.5, 109.5, true); store.save(track, 65000, 1);
     var view = new MapView(); view.snapshots = store; view.restoreSnapshot();
+    for (var step = 0; step < 100 && !view.restored; step++) { view.advanceRecovery(); }
+    Test.assert(view.restored);
     Test.assertEqual(view.track.size(), 1); Test.assertEqual(view.recorder.state, view.recorder.HISTORY);
     Test.assert(!view.recorder.hasSession()); Test.assert(!view.recorder.canAccumulate());
     Test.assert(view.loc == null); Test.assertEqual(view.recorder.elapsedMs(), 65000);

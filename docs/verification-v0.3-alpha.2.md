@@ -1,5 +1,7 @@
 # v0.3.0-alpha.2 验证报告
 
+后续实机反馈：长轨迹恢复在 `SnapshotStore.checksum → valid → load → MapView.onShow` 触发 Watchdog。本版停止推荐安装，修复及新增真实事件检查见 [alpha.3 报告](verification-v0.3-alpha.3.md)。以下为发布时的原始验证记录，不代表已通过实机启动验收。
+
 日期：2026-11-06；目标：普通 Forerunner 255；SDK 9.3.0 / Java 17；渭南 z15、121 张底图。
 
 ## 问题与修复

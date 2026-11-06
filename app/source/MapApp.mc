@@ -52,9 +52,16 @@ class MapView extends WatchUi.View {
     var recorder;
     var snapshots;
     var restored = false;
+    var recovering = false;
+    var recovery = null;
+    var recoveryData = null;
+    var recoveryIndex = 0;
+    var recoveryTimer = null;
     var sessionStarted = false;
     var lastCheckpoint = 0;
     var savedRevision = -1;
+    var savedPhase = -1;
+    var savedElapsedSeconds = -1;
     var notice = null;
     var menuOpen = false;
     var menuRows = [];
@@ -93,7 +100,20 @@ class MapView extends WatchUi.View {
     }
 
     function onShow() {
-        if (!restored) { restoreSnapshot(); }
+        if (!restored) {
+            if (!recovering) { restoreSnapshot(); }
+            if (recoveryTimer == null) {
+                recoveryTimer = createRecoveryTimer();
+                recoveryTimer.start(method(:onRecoveryTick), 100, true);
+            }
+            return;
+        }
+        startLiveUpdates();
+    }
+
+    function createRecoveryTimer() { return new Timer.Timer(); }
+
+    function startLiveUpdates() {
         Position.enableLocationEvents(Position.LOCATION_CONTINUOUS, method(:onPosition));
         // 1 秒节拍：静止时也能靠罗盘实时转头，不必等 GPS 回调
         if (headingTimer == null) {
@@ -103,6 +123,7 @@ class MapView extends WatchUi.View {
     }
 
     function onHide() {
+        if (recoveryTimer != null) { recoveryTimer.stop(); recoveryTimer = null; }
         if (headingTimer != null) {
             headingTimer.stop();
             headingTimer = null;
@@ -111,6 +132,7 @@ class MapView extends WatchUi.View {
     }
 
     function onHeadingTick() as Void {
+        if (recovering) { return; }
         var nextStatus = fix.status(System.getTimer());
         var needsUpdate = nextStatus != lastUiStatus || recorder.state == recorder.RUNNING;
         lastUiStatus = nextStatus;
@@ -157,6 +179,7 @@ class MapView extends WatchUi.View {
     }
 
     function onPosition(info as Position.Info) as Void {
+        if (recovering) { return; }
         var p = info.position;
         var deg = (p == null) ? null : p.toDegrees();
         var stamp = (info.when == null) ? null : info.when.value();
@@ -249,6 +272,7 @@ class MapView extends WatchUi.View {
     }
 
     function onUp() {
+        if (recovering) { return; }
         if (menuOpen) { menuIndex = (menuIndex + menuRows.size() - 1) % menuRows.size(); WatchUi.requestUpdate(); return; }
         if (browse.axis == 0) {
             panBy(0, -40);
@@ -258,6 +282,7 @@ class MapView extends WatchUi.View {
     }
 
     function onDown() {
+        if (recovering) { return; }
         if (menuOpen) { menuIndex = (menuIndex + 1) % menuRows.size(); WatchUi.requestUpdate(); return; }
         if (browse.axis == 0) {
             panBy(0, 40);
@@ -267,12 +292,14 @@ class MapView extends WatchUi.View {
     }
 
     function onStart() {
+        if (recovering) { return; }
         if (menuOpen) { performAction(menuRows[menuIndex][1]); return; }
         browse.toggleAxis();
         WatchUi.requestUpdate();
     }
 
     function onBack() {
+        if (recovering) { WatchUi.popView(WatchUi.SLIDE_IMMEDIATE); return true; }
         if (menuOpen) {
             menuOpen = false; confirmDiscard = false; WatchUi.requestUpdate(); return true;
         }
@@ -290,40 +317,90 @@ class MapView extends WatchUi.View {
     }
 
     function restoreSnapshot() {
-        restored = true;
-        var data = snapshots.load();
-        if (data != null && data[6].size() > 0) {
-            track.restore(data[6], data[2]);
-            recorder.totalMs = data[3] * 1000;
-            recorder.state = recorder.HISTORY;
-            notice = data[4] == recorder.SAVED ? "上次FIT已保存" : "已恢复屏幕轨迹";
+        if (restored || recovering) { return; }
+        recovering = true;
+        recovery = new SnapshotLoader(snapshots);
+        recoveryData = null; recoveryIndex = 0;
+        notice = "正在恢复轨迹";
+    }
+
+    function onRecoveryTick() as Void {
+        if (!recovering) { return; }
+        if (advanceRecovery()) {
+            if (recoveryTimer != null) { recoveryTimer.stop(); recoveryTimer = null; }
+            startLiveUpdates();
+            WatchUi.requestUpdate();
+        }
+    }
+
+    // Bounded independently of the saved track length: one load step OR 32 projections.
+    function advanceRecovery() {
+        if (!recovering) { return true; }
+        if (recoveryData == null) {
+            if (!recovery.step()) { return false; }
+            recoveryData = recovery.takeResult(); recovery = null;
+            if (recoveryData == null || recoveryData[6].size() == 0) {
+                finishRecovery(); return true;
+            }
+            track.clear(); recoveryIndex = 0;
+            return false;
+        }
+        var points = recoveryData[6];
+        for (var n = 0; n < 32 && recoveryIndex < points.size(); n++) {
+            var lat = points[recoveryIndex]; var lon = points[recoveryIndex + 1];
+            track.append(lat == null ? null : [lat / 100000.0, lon / 100000.0]);
+            recoveryIndex += 2;
+        }
+        if (recoveryIndex < points.size()) { return false; }
+        track.distance = recoveryData[2] / 100.0;
+        track.breakSegment();
+        recorder.totalMs = recoveryData[3] * 1000;
+        recorder.state = recorder.HISTORY;
+        finishRecovery();
+        return true;
+    }
+
+    function finishRecovery() {
+        notice = null;
+        if (recoveryData != null && recoveryData[6].size() > 0) {
+            notice = recoveryData[4] == recorder.SAVED ? "上次FIT已保存" : "已恢复屏幕轨迹";
             // Restored points are historical: never create a live position arrow.
         }
         if (snapshots.error != null) { notice = snapshots.error; }
+        savedPhase = recoveryData == null ? -1 : recoveryData[4];
+        savedElapsedSeconds = recoveryData == null ? -1 : recoveryData[3];
+        recovery = null; recoveryData = null;
+        restored = true; recovering = false;
         lastCheckpoint = System.getTimer();
         savedRevision = track.revision;
     }
 
     function checkpoint(force) {
-        if (!restored) { return; }
+        if (!restored || recovering) { return; }
         var now = System.getTimer();
         if (!force && (now - lastCheckpoint < 60000 || track.revision == savedRevision)) { return; }
         lastCheckpoint = now;
-        if (snapshots.save(track, recorder.elapsedMs(), recorder.state)) { savedRevision = track.revision; }
+        var elapsed = recorder.elapsedMs();
+        if (snapshots.save(track, elapsed, recorder.state)) {
+            savedRevision = track.revision; savedPhase = recorder.state;
+            savedElapsedSeconds = (elapsed / 1000).toNumber();
+        }
         else { notice = snapshots.error; }
     }
 
     function shutdown() {
         // Try to preserve FIT on system-driven exit; no promise of crash-proof FIT recovery.
-        checkpoint(true);
         if (recorder.hasSession() && !recorder.finish(true)) {
             recorder.totalMs = recorder.elapsedMs(); recorder.state = recorder.INTERRUPTED;
         }
-        checkpoint(true);
+        // Save after FIT changes state, once; explicit save-and-exit already checkpointed it.
+        if (track.revision != savedRevision || recorder.state != savedPhase ||
+            (recorder.elapsedMs() / 1000).toNumber() != savedElapsedSeconds) { checkpoint(true); }
         onHide();
     }
 
     function openMenu() {
+        if (recovering) { return; }
         menuOpen = true; menuIndex = 0; confirmDiscard = false;
         menuRows = [["返回地图", "back"]];
         if (recorder.hasSession()) {
@@ -340,6 +417,7 @@ class MapView extends WatchUi.View {
     }
 
     function performAction(action) {
+        if (recovering) { return; }
         if (action.equals("discard_yes") && !confirmDiscard) { return; }
         if (action.equals("back")) { menuOpen = false; confirmDiscard = false; }
         else if (action.equals("discard")) {
@@ -453,6 +531,13 @@ class MapView extends WatchUi.View {
     }
 
     function onUpdate(dc) {
+        if (recovering) {
+            dc.setColor(Graphics.COLOR_BLACK, Graphics.COLOR_WHITE); dc.clear();
+            dc.drawText(W / 2, 92, Graphics.FONT_XTINY, "正在恢复轨迹", Graphics.TEXT_JUSTIFY_CENTER);
+            dc.drawText(W / 2, 122, Graphics.FONT_XTINY, "请稍候", Graphics.TEXT_JUSTIFY_CENTER);
+            dc.drawText(W / 2, 182, Graphics.FONT_XTINY, "BACK退出", Graphics.TEXT_JUSTIFY_CENTER);
+            return;
+        }
         if (menuOpen) { drawMenu(dc); return; }
         clampCenter();
         var left = centerGX - W / 2.0;
