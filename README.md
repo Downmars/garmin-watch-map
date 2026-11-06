@@ -4,6 +4,8 @@
 
 **先看 [迭代计划](docs/ROADMAP.md)、[设备与方案调研](docs/RESEARCH.md)、[验证标准](docs/VALIDATION.md)、[版本记录](CHANGELOG.md)。**
 
+当前候选版为 **v0.2.0-alpha.2**，修复 alpha.1 在静止罗盘更新时出现 IQ! 的兼容性错误。请使用新包，详见 [安装说明](docs/INSTALL-ALPHA.md) 和 [回归验证](docs/verification-v0.2-alpha.2.md)。
+
 ## 当前能力
 
 - 渭南主城区离线街道图：中心 WGS-84 34.5000, 109.5000，覆盖约 22.2×22.2 km。

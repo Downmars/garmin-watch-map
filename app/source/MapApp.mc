@@ -105,7 +105,8 @@ class MapView extends WatchUi.View {
             while (cd > 180.0) { cd -= 360.0; }
             while (cd < -180.0) { cd += 360.0; }
             heading = heading + cd * 0.4;
-            if (Math.abs(cd) > 1.0) { needsUpdate = true; }
+            // Math.abs is a newer module API and is absent on the tested FR255.
+            if (cd > 1.0 || cd < -1.0) { needsUpdate = true; }
         }
         if (needsUpdate) { WatchUi.requestUpdate(); }
     }

@@ -40,7 +40,7 @@ try {
     if (-not (Test-Path 'app\source\MapData.mc')) { throw 'No generated map. Run without -CompileOnly first.' }
     $jungle = if ($TestBuild) { 'test.jungle' } else { 'app\monkey.jungle' }
     $compileArgs = @('-Xmx4g', '-Dfile.encoding=UTF-8', '-jar', (Join-Path $sdkRoot 'bin\monkeybrains.jar'),
-        '-f', $jungle, '-o', $OutFile, '-d', 'fr255', '-y', $keyFile)
+        '-f', $jungle, '-o', $OutFile, '-d', 'fr255', '-y', $keyFile, '-w')
     if ($TestBuild) { $compileArgs += '-t' }
     & $javaExe @compileArgs
     if ($LASTEXITCODE -ne 0) { throw 'Garmin compilation failed.' }
