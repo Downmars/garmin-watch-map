@@ -1,0 +1,58 @@
+{
+  "center_lat": 34.5,
+  "viewport": [
+    260,
+    260
+  ],
+  "tile_size": 512,
+  "levels": [
+    {
+      "zoom": 13,
+      "mpp_at_34_5": 15.7484,
+      "full_screen_width_km": 4.095,
+      "maps_to_cover_current_bounds": 12,
+      "grid": [
+        4,
+        3
+      ],
+      "source_tiles": 48,
+      "origin": [
+        1685504,
+        833536
+      ]
+    },
+    {
+      "zoom": 14,
+      "mpp_at_34_5": 7.8742,
+      "full_screen_width_km": 2.047,
+      "maps_to_cover_current_bounds": 36,
+      "grid": [
+        6,
+        6
+      ],
+      "source_tiles": 144,
+      "origin": [
+        3371520,
+        1667072
+      ]
+    },
+    {
+      "zoom": 15,
+      "mpp_at_34_5": 3.9371,
+      "full_screen_width_km": 1.024,
+      "maps_to_cover_current_bounds": 121,
+      "grid": [
+        11,
+        11
+      ],
+      "source_tiles": 484,
+      "origin": [
+        6743040,
+        3334144
+      ]
+    }
+  ],
+  "visible_tile_index_cases": 2028,
+  "max_visible_tiles": 4,
+  "scope": "offline geometry analysis, no map downloads or app implementation"
+}
