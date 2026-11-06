@@ -4,16 +4,21 @@
 
 **先看 [迭代计划](docs/ROADMAP.md)、[设备与方案调研](docs/RESEARCH.md)、[验证标准](docs/VALIDATION.md)、[版本记录](CHANGELOG.md)。**
 
-当前候选版为 **v0.2.0-alpha.2**，修复 alpha.1 在静止罗盘更新时出现 IQ! 的兼容性错误。请使用新包，详见 [安装说明](docs/INSTALL-ALPHA.md) 和 [回归验证](docs/verification-v0.2-alpha.2.md)。
+当前候选版为 **v0.3.0-alpha.3**，修复长轨迹恢复时打开即 IQ!，并保留平移优化。alpha.1/alpha.2 的同步长轨迹恢复路径存在执行超时风险，停止推荐安装。v0.2 已合入主分支。新包见 [v0.3 操作说明](docs/INSTALL-V03.md) 和 [验证报告](docs/verification-v0.3-alpha.3.md)。
+
+用户已反馈 alpha.3 功能暂且正常，见 [阶段反馈](docs/acceptance-v0.3.md)。下一版选择地图缩放与浏览，研究结论见 [v0.4 方案](docs/PLAN-V04.md)；规划中的功能尚未实现，现有包保持不变。
 
 ## 当前能力
 
 - 渭南主城区离线街道图：中心 WGS-84 34.5000, 109.5000，覆盖约 22.2×22.2 km。
-- 自绘地图、GPS 位置、方向、临时轨迹和估算距离；FR255 五键操作。
+- 自绘地图、GPS 位置、方向、800 点简化轨迹和估算距离；FR255 五键操作。
 - v0.1 基线有下载缓存、失败中止、范围校验、压缩与 Windows 构建脚本。
-- v0.2 alpha 在独立分支开发定位质量/过期提示、断段和浏览保持。请以对应分支的 CHANGELOG 和验证报告为准。
+- v0.2 提供定位质量/过期提示、断段和浏览保持，并修复静止罗盘更新兼容性错误。
+- v0.3 候选版支持新步行/跑步、暂停/继续、保存或确认丢弃 FIT、退出菜单及双份轨迹恢复摘要。
+- alpha.2 缓存轨迹投影、跳过屏幕外线段并减少重复画线；模拟器长轨迹绘制改善，实机手感待复测。
+- alpha.3 分批校验/恢复摘要，恢复时保护原数据；减少保存校验和退出写入的重复工作，真实模拟器启动至退出检查通过。
 
-目前没有目的地搜索、自动寻路、多级缩放或 FIT 保存。退出后不保留完整活动。`online/`、`app-field/` 和 `probe/` 为上游原型，尚未纳入本 fork 的实机发布范围。
+目前没有目的地搜索、自动寻路或多级缩放。恢复摘要仅保留最近的简化屏幕轨迹，不接续上次 FIT 会话；完整活动交由 Garmin 原生 FIT 保存。FIT 在实机的内容和 Connect 同步仍待验收。`online/`、`app-field/` 和 `probe/` 为上游原型，尚未纳入本 fork 的实机发布范围。
 
 FR255 不支持原生 `WatchUi.MapView`，使用预生成图像底图。FR955/965 等机型有不同 API 能力，不能直接套用此处的功能与内存结论。
 
@@ -21,7 +26,7 @@ FR255 不支持原生 `WatchUi.MapView`，使用预生成图像底图。FR955/96
 
 1. 将为 **fr255** 编译的 `.prg` 复制到手表 `Internal Storage/GARMIN/Apps`；传输完成后断开 USB。
 2. 从手表应用列表打开「渭南地图」，室外等待有效定位。
-3. UP/DOWN 平移，START 切换上下/左右轴。v0.2 浏览模式中 BACK 先回中，再次 BACK 才退出；v0.1 则会在约 5 秒后自动回中。
+3. 地图中 UP/DOWN 平移，START 切换轴；BACK 从浏览回中，在跟随模式打开运动菜单。菜单中 UP/DOWN 选择、START 确认、BACK 返回地图。退出也从菜单执行。
 
 文件夹卡顿或显示空白时，先排查 MTP 连接、USB 线和其他 Garmin 程序占用，不通过随意新建系统目录解决。详见 [渭南说明](WEINAN.md)。
 
@@ -38,7 +43,7 @@ python -m unittest discover -s tests -v
 
 首次生成地图使用 `.\build-weinan.ps1`，仅代理不可用时加 `-Direct`。脚本提供 `CIQ_PY`、`CIQ_JAVA`、`CIQ_SDK`、`CIQ_KEY` 环境变量覆盖；Java 变量指向可执行文件。城市资源由脚本生成，不在 Git 中。
 
-切换到 `iteration/v0.2-reliability` 后，可以指定 `-OutFile` 避免覆盖旧包，并构建 Monkey C 单元测试：
+可以指定 `-OutFile` 避免覆盖旧包，并构建 Monkey C 单元测试：
 
 ```powershell
 .\build-weinan.ps1 -CompileOnly -TestBuild -OutFile dist\navigation-tests.prg
@@ -50,8 +55,8 @@ GitHub CI 运行不联网的 Python 测试、语法/XML 和提交内容检查。
 
 ## 版本与贡献
 
-- `main`：已经核验的基线与计划。
-- `iteration/v0.2-reliability`：首轮定位与浏览改进；实机验收前为 alpha。
+- `main`：v0.2 功能验收基线与计划；长时间内存/续航测试仍待完成。
+- `iteration/v0.3-recording`：运动记录与恢复候选版；实机验收前为 alpha。
 - 迭代在自己的 fork 内审查，不自动向上游提 PR。
 - 只提交源码、测试与文档；排除私钥、SDK、生成底图、个人 GPX/FIT 和本地日志。
 

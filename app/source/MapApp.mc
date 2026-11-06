@@ -9,13 +9,18 @@ using Toybox.Timer;
 using Toybox.WatchUi;
 
 class MapApp extends Application.AppBase {
+    var mainView = null;
     function initialize() {
         AppBase.initialize();
     }
 
     function getInitialView() {
-        var view = new MapView();
-        return [ view, new MapDelegate(view) ];
+        mainView = new MapView();
+        return [ mainView, new MapDelegate(mainView) ];
+    }
+
+    function onStop(state) {
+        if (mainView != null) { mainView.shutdown(); }
     }
 }
 
@@ -43,7 +48,25 @@ class MapView extends WatchUi.View {
     var compass = null;
     var prevLat = null;
     var prevLon = null;
-    var trail = [];
+    var track;
+    var recorder;
+    var snapshots;
+    var restored = false;
+    var recovering = false;
+    var recovery = null;
+    var recoveryData = null;
+    var recoveryIndex = 0;
+    var recoveryTimer = null;
+    var sessionStarted = false;
+    var lastCheckpoint = 0;
+    var savedRevision = -1;
+    var savedPhase = -1;
+    var savedElapsedSeconds = -1;
+    var notice = null;
+    var menuOpen = false;
+    var menuRows = [];
+    var menuIndex = 0;
+    var confirmDiscard = false;
     var browse;
     var fix;
     var lastUiStatus = null;
@@ -53,15 +76,15 @@ class MapView extends WatchUi.View {
     var W = 260;
     var H = 260;
     var headingTimer = null;
-    var lastFixLat = null;
-    var lastFixLon = null;
-    var distM = 0.0;
     var currentSpeed = 0.0;
 
     function initialize() {
         View.initialize();
         browse = new BrowseState();
         fix = new FixState();
+        track = new TrackModel();
+        recorder = new RecordingController();
+        snapshots = new SnapshotStore("weinan.track.v1.");
         var ds = System.getDeviceSettings();
         if (ds != null) {
             W = ds.screenWidth;
@@ -77,6 +100,20 @@ class MapView extends WatchUi.View {
     }
 
     function onShow() {
+        if (!restored) {
+            if (!recovering) { restoreSnapshot(); }
+            if (recoveryTimer == null) {
+                recoveryTimer = createRecoveryTimer();
+                recoveryTimer.start(method(:onRecoveryTick), 100, true);
+            }
+            return;
+        }
+        startLiveUpdates();
+    }
+
+    function createRecoveryTimer() { return new Timer.Timer(); }
+
+    function startLiveUpdates() {
         Position.enableLocationEvents(Position.LOCATION_CONTINUOUS, method(:onPosition));
         // 1 秒节拍：静止时也能靠罗盘实时转头，不必等 GPS 回调
         if (headingTimer == null) {
@@ -86,6 +123,7 @@ class MapView extends WatchUi.View {
     }
 
     function onHide() {
+        if (recoveryTimer != null) { recoveryTimer.stop(); recoveryTimer = null; }
         if (headingTimer != null) {
             headingTimer.stop();
             headingTimer = null;
@@ -94,8 +132,9 @@ class MapView extends WatchUi.View {
     }
 
     function onHeadingTick() as Void {
+        if (recovering) { return; }
         var nextStatus = fix.status(System.getTimer());
-        var needsUpdate = nextStatus != lastUiStatus;
+        var needsUpdate = nextStatus != lastUiStatus || recorder.state == recorder.RUNNING;
         lastUiStatus = nextStatus;
         var minute = System.getClockTime().min;
         if (minute != lastUiMinute) { needsUpdate = true; lastUiMinute = minute; }
@@ -108,19 +147,13 @@ class MapView extends WatchUi.View {
             // Math.abs is a newer module API and is absent on the tested FR255.
             if (cd > 1.0 || cd < -1.0) { needsUpdate = true; }
         }
+        checkpoint(false);
         if (needsUpdate) { WatchUi.requestUpdate(); }
     }
 
-    function lonToGX(lon) {
-        return (lon + 180.0) / 360.0 * MapData.WORLD;
-    }
+    function lonToGX(lon) { return MapProjection.x(lon); }
 
-    function latToGY(lat) {
-        if (lat > 85.05112878) { lat = 85.05112878; }
-        if (lat < -85.05112878) { lat = -85.05112878; }
-        var rad = lat * Math.PI / 180.0;
-        return (1.0 - Math.log(Math.tan(rad) + 1.0 / Math.cos(rad), 2.718281828459045) / Math.PI) / 2.0 * MapData.WORLD;
-    }
+    function latToGY(lat) { return MapProjection.y(lat); }
 
     function gxToLon(gx) {
         return gx / MapData.WORLD * 360.0 - 180.0;
@@ -146,6 +179,7 @@ class MapView extends WatchUi.View {
     }
 
     function onPosition(info as Position.Info) as Void {
+        if (recovering) { return; }
         var p = info.position;
         var deg = (p == null) ? null : p.toDegrees();
         var stamp = (info.when == null) ? null : info.when.value();
@@ -157,13 +191,9 @@ class MapView extends WatchUi.View {
         }
         if (p != null) {
             if (fix.startsSegment) {
-                lastFixLat = null;
-                lastFixLon = null;
+                track.breakSegment();
                 prevLat = null;
                 prevLon = null;
-                if (trail.size() > 0 && trail[trail.size() - 1] != null) {
-                    trail.add(null);
-                }
             }
             loc = p;
             readCompass();
@@ -175,21 +205,6 @@ class MapView extends WatchUi.View {
                 spd = 0.0;
             }
             currentSpeed = spd;
-
-            // 累计里程：相邻两点距离累加，单段超过 50 米视为跳点丢弃
-            if (lastFixLat != null) {
-                var sLat = (deg[0] - lastFixLat) * Math.PI / 180.0;
-                var sLon = (deg[1] - lastFixLon) * Math.PI / 180.0;
-                var mD = 6371000.0;
-                var sy = sLat * mD;
-                var sx = sLon * mD * Math.cos(deg[0] * Math.PI / 180.0);
-                var seg = Math.pow(sy * sy + sx * sx, 0.5);
-                if (seg < 50.0) {
-                    distM = distM + seg;
-                }
-            }
-            lastFixLat = deg[0];
-            lastFixLon = deg[1];
 
             // 先按 8 米参考点算航迹方位（走动时用，和轨迹方向天然一致）
             if (prevLat == null) {
@@ -224,30 +239,9 @@ class MapView extends WatchUi.View {
                 heading = heading + cd * 0.4;
             }
 
-            // 轨迹：按距离抽稀（8 米一个点），满了丢弃最早的一段而不是整条清空
-            var addPoint = true;
-            if (trail.size() > 0 && trail[trail.size() - 1] != null) {
-                var lastP = trail[trail.size() - 1];
-                var dLat0 = (deg[0] - lastP[0]) * Math.PI / 180.0;
-                var dLon0 = (deg[1] - lastP[1]) * Math.PI / 180.0;
-                var mD0 = 6371000.0;
-                var ey = dLat0 * mD0;
-                var ex = dLon0 * mD0 * Math.cos(deg[0] * Math.PI / 180.0);
-                if (ey * ey + ex * ex < 64.0) {
-                    addPoint = false;
-                }
-            }
-            if (addPoint) {
-                trail.add([deg[0], deg[1]]);
-                if (trail.size() > 800) {
-                    // 一次丢最早 100 点，保持滑动窗口，避免每点都重建数组
-                    var nt = [];
-                    for (var q = 100; q < trail.size(); q++) {
-                        nt.add(trail[q]);
-                    }
-                    trail = nt;
-                }
-            }
+            if (recorder.canAccumulate()) {
+                track.accept(deg[0], deg[1], fix.startsSegment);
+            } else { track.breakSegment(); }
             if (browse.following) {
                 centerGX = lonToGX(deg[1]);
                 centerGY = latToGY(deg[0]);
@@ -278,6 +272,8 @@ class MapView extends WatchUi.View {
     }
 
     function onUp() {
+        if (recovering) { return; }
+        if (menuOpen) { menuIndex = (menuIndex + menuRows.size() - 1) % menuRows.size(); WatchUi.requestUpdate(); return; }
         if (browse.axis == 0) {
             panBy(0, -40);
         } else {
@@ -286,6 +282,8 @@ class MapView extends WatchUi.View {
     }
 
     function onDown() {
+        if (recovering) { return; }
+        if (menuOpen) { menuIndex = (menuIndex + 1) % menuRows.size(); WatchUi.requestUpdate(); return; }
         if (browse.axis == 0) {
             panBy(0, 40);
         } else {
@@ -294,16 +292,178 @@ class MapView extends WatchUi.View {
     }
 
     function onStart() {
+        if (recovering) { return; }
+        if (menuOpen) { performAction(menuRows[menuIndex][1]); return; }
         browse.toggleAxis();
         WatchUi.requestUpdate();
     }
 
     function onBack() {
-        if (!browse.backToFollow()) { return false; }
+        if (recovering) { WatchUi.popView(WatchUi.SLIDE_IMMEDIATE); return true; }
+        if (menuOpen) {
+            menuOpen = false; confirmDiscard = false; WatchUi.requestUpdate(); return true;
+        }
+        if (!browse.backToFollow()) { openMenu(); return true; }
         centerGX = lonToGX((loc == null) ? MapData.CENTER_LON : fix.longitude);
         centerGY = latToGY((loc == null) ? MapData.CENTER_LAT : fix.latitude);
         WatchUi.requestUpdate();
         return true;
+    }
+
+
+    function elapsedText() {
+        var seconds = (recorder.elapsedMs() / 1000).toNumber();
+        return (seconds / 60).toNumber().format("%02d") + ":" + (seconds % 60).format("%02d");
+    }
+
+    function restoreSnapshot() {
+        if (restored || recovering) { return; }
+        recovering = true;
+        recovery = new SnapshotLoader(snapshots);
+        recoveryData = null; recoveryIndex = 0;
+        notice = "正在恢复轨迹";
+    }
+
+    function onRecoveryTick() as Void {
+        if (!recovering) { return; }
+        if (advanceRecovery()) {
+            if (recoveryTimer != null) { recoveryTimer.stop(); recoveryTimer = null; }
+            startLiveUpdates();
+            WatchUi.requestUpdate();
+        }
+    }
+
+    // Bounded independently of the saved track length: one load step OR 32 projections.
+    function advanceRecovery() {
+        if (!recovering) { return true; }
+        if (recoveryData == null) {
+            if (!recovery.step()) { return false; }
+            recoveryData = recovery.takeResult(); recovery = null;
+            if (recoveryData == null || recoveryData[6].size() == 0) {
+                finishRecovery(); return true;
+            }
+            track.clear(); recoveryIndex = 0;
+            return false;
+        }
+        var points = recoveryData[6];
+        for (var n = 0; n < 32 && recoveryIndex < points.size(); n++) {
+            var lat = points[recoveryIndex]; var lon = points[recoveryIndex + 1];
+            track.append(lat == null ? null : [lat / 100000.0, lon / 100000.0]);
+            recoveryIndex += 2;
+        }
+        if (recoveryIndex < points.size()) { return false; }
+        track.distance = recoveryData[2] / 100.0;
+        track.breakSegment();
+        recorder.totalMs = recoveryData[3] * 1000;
+        recorder.state = recorder.HISTORY;
+        finishRecovery();
+        return true;
+    }
+
+    function finishRecovery() {
+        notice = null;
+        if (recoveryData != null && recoveryData[6].size() > 0) {
+            notice = recoveryData[4] == recorder.SAVED ? "上次FIT已保存" : "已恢复屏幕轨迹";
+            // Restored points are historical: never create a live position arrow.
+        }
+        if (snapshots.error != null) { notice = snapshots.error; }
+        savedPhase = recoveryData == null ? -1 : recoveryData[4];
+        savedElapsedSeconds = recoveryData == null ? -1 : recoveryData[3];
+        recovery = null; recoveryData = null;
+        restored = true; recovering = false;
+        lastCheckpoint = System.getTimer();
+        savedRevision = track.revision;
+    }
+
+    function checkpoint(force) {
+        if (!restored || recovering) { return; }
+        var now = System.getTimer();
+        if (!force && (now - lastCheckpoint < 60000 || track.revision == savedRevision)) { return; }
+        lastCheckpoint = now;
+        var elapsed = recorder.elapsedMs();
+        if (snapshots.save(track, elapsed, recorder.state)) {
+            savedRevision = track.revision; savedPhase = recorder.state;
+            savedElapsedSeconds = (elapsed / 1000).toNumber();
+        }
+        else { notice = snapshots.error; }
+    }
+
+    function shutdown() {
+        // Try to preserve FIT on system-driven exit; no promise of crash-proof FIT recovery.
+        if (recorder.hasSession() && !recorder.finish(true)) {
+            recorder.totalMs = recorder.elapsedMs(); recorder.state = recorder.INTERRUPTED;
+        }
+        // Save after FIT changes state, once; explicit save-and-exit already checkpointed it.
+        if (track.revision != savedRevision || recorder.state != savedPhase ||
+            (recorder.elapsedMs() / 1000).toNumber() != savedElapsedSeconds) { checkpoint(true); }
+        onHide();
+    }
+
+    function openMenu() {
+        if (recovering) { return; }
+        menuOpen = true; menuIndex = 0; confirmDiscard = false;
+        menuRows = [["返回地图", "back"]];
+        if (recorder.hasSession()) {
+            menuRows.add([recorder.state == recorder.RUNNING ? "暂停运动" : "继续运动", "toggle"]);
+            menuRows.add(["保存运动", "save"]);
+            menuRows.add(["丢弃运动…", "discard"]);
+            menuRows.add(["保存并退出", "save_exit"]);
+        } else {
+            menuRows.add(["开始新步行", "walk"]);
+            menuRows.add(["开始新跑步", "run"]);
+            menuRows.add(["退出地图", "exit"]);
+        }
+        WatchUi.requestUpdate();
+    }
+
+    function performAction(action) {
+        if (recovering) { return; }
+        if (action.equals("discard_yes") && !confirmDiscard) { return; }
+        if (action.equals("back")) { menuOpen = false; confirmDiscard = false; }
+        else if (action.equals("discard")) {
+            confirmDiscard = true; menuIndex = 0;
+            menuRows = [["取消丢弃", "cancel"], ["确认丢弃运动", "discard_yes"]];
+        } else if (action.equals("cancel")) { openMenu(); }
+        else if (action.equals("walk") || action.equals("run")) {
+            if (!fix.isCurrent(System.getTimer())) { notice = "请先等待GPS正常"; }
+            else if (recorder.start(action.equals("walk") ? Toybox.Activity.SPORT_WALKING : Toybox.Activity.SPORT_RUNNING)) {
+                track.clear(); sessionStarted = true; notice = null; checkpoint(true); menuOpen = false;
+            } else { notice = recorder.error; openMenu(); }
+        } else if (action.equals("toggle")) {
+            var ok = recorder.state == recorder.RUNNING ? recorder.pause() : recorder.resume();
+            if (ok) {
+                if (!sessionStarted) { track.clear(); sessionStarted = true; }
+                track.breakSegment(); notice = null; checkpoint(true); menuOpen = false;
+            } else { notice = recorder.error; }
+        } else if (action.equals("save") || action.equals("save_exit") || action.equals("discard_yes")) {
+            if (recorder.finish(!action.equals("discard_yes"))) {
+                notice = recorder.label();
+                if (action.equals("discard_yes")) { track.clear(); checkpoint(true); }
+                checkpoint(true); sessionStarted = false;
+                if (action.equals("save_exit")) { WatchUi.popView(WatchUi.SLIDE_IMMEDIATE); return; }
+                menuOpen = false; confirmDiscard = false;
+            } else { notice = recorder.error; openMenu(); }
+        } else if (action.equals("exit") && !recorder.hasSession()) {
+            checkpoint(true); WatchUi.popView(WatchUi.SLIDE_IMMEDIATE); return;
+        }
+        WatchUi.requestUpdate();
+    }
+
+    function drawMenu(dc) {
+        dc.setColor(Graphics.COLOR_BLACK, Graphics.COLOR_WHITE); dc.clear();
+        dc.drawText(W / 2, 18, Graphics.FONT_XTINY, confirmDiscard ? "丢弃后无法恢复" : "运动记录", Graphics.TEXT_JUSTIFY_CENTER);
+        dc.drawText(W / 2, 38, Graphics.FONT_XTINY, recorder.label() + " " + elapsedText(), Graphics.TEXT_JUSTIFY_CENTER);
+        var first = menuIndex > 3 ? menuIndex - 3 : 0;
+        for (var n = first; n < menuRows.size() && n < first + 5; n++) {
+            var y = 64 + (n - first) * 27;
+            dc.setColor(n == menuIndex ? Graphics.COLOR_BLACK : Graphics.COLOR_WHITE, Graphics.COLOR_TRANSPARENT);
+            dc.fillRectangle(24, y, W - 48, 26);
+            dc.setColor(n == menuIndex ? Graphics.COLOR_WHITE : Graphics.COLOR_BLACK, Graphics.COLOR_TRANSPARENT);
+            dc.drawText(W / 2, y + 2, Graphics.FONT_XTINY, menuRows[n][0], Graphics.TEXT_JUSTIFY_CENTER);
+        }
+        dc.setColor(Graphics.COLOR_BLACK, Graphics.COLOR_WHITE);
+        dc.drawText(W / 2, 204, Graphics.FONT_XTINY, notice == null ? "UP/DOWN选择" : notice, Graphics.TEXT_JUSTIFY_CENTER);
+        dc.drawText(W / 2, 224, Graphics.FONT_XTINY, "START确认 BACK返回", Graphics.TEXT_JUSTIFY_CENTER);
     }
 
     function outsideMap() {
@@ -371,6 +531,14 @@ class MapView extends WatchUi.View {
     }
 
     function onUpdate(dc) {
+        if (recovering) {
+            dc.setColor(Graphics.COLOR_BLACK, Graphics.COLOR_WHITE); dc.clear();
+            dc.drawText(W / 2, 92, Graphics.FONT_XTINY, "正在恢复轨迹", Graphics.TEXT_JUSTIFY_CENTER);
+            dc.drawText(W / 2, 122, Graphics.FONT_XTINY, "请稍候", Graphics.TEXT_JUSTIFY_CENTER);
+            dc.drawText(W / 2, 182, Graphics.FONT_XTINY, "BACK退出", Graphics.TEXT_JUSTIFY_CENTER);
+            return;
+        }
+        if (menuOpen) { drawMenu(dc); return; }
         clampCenter();
         var left = centerGX - W / 2.0;
         var top = centerGY - H / 2.0;
@@ -392,20 +560,7 @@ class MapView extends WatchUi.View {
             }
         }
 
-        if (trail.size() > 1) {
-            dc.setColor(0x8B0000, Graphics.COLOR_TRANSPARENT);
-            for (var k = 1; k < trail.size(); k++) {
-                if (trail[k - 1] == null || trail[k] == null) { continue; }
-                var ax = lonToGX(trail[k - 1][1]) - left;
-                var ay = latToGY(trail[k - 1][0]) - top;
-                var bx = lonToGX(trail[k][1]) - left;
-                var by = latToGY(trail[k][0]) - top;
-                dc.drawLine(ax, ay, bx, by);
-                dc.drawLine(ax + 1, ay, bx + 1, by);
-                dc.drawLine(ax, ay + 1, bx, by + 1);
-                dc.drawLine(ax + 1, ay + 1, bx + 1, by + 1);
-            }
-        }
+        TrackRenderer.draw(dc, track, left, top, W, H);
 
         if (loc != null) {
             var deg = loc.toDegrees();
@@ -438,12 +593,20 @@ class MapView extends WatchUi.View {
         dc.setColor(Graphics.COLOR_BLACK, Graphics.COLOR_TRANSPARENT);
         dc.drawText(W / 2, 44, Graphics.FONT_XTINY, "(c) OSM contributors", Graphics.TEXT_JUSTIFY_CENTER);
 
+        if (notice != null) {
+            dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_WHITE);
+            dc.fillRectangle(25, H - 90, W - 50, 20);
+            dc.setColor(Graphics.COLOR_BLACK, Graphics.COLOR_TRANSPARENT);
+            dc.drawText(W / 2, H - 88, Graphics.FONT_XTINY, notice, Graphics.TEXT_JUSTIFY_CENTER);
+        }
+        dc.drawText(W / 2, H - 70, Graphics.FONT_XTINY, recorder.label() + " " + elapsedText(), Graphics.TEXT_JUSTIFY_CENTER);
+
         // 累计里程
         var distText;
-        if (distM >= 1000.0) {
-            distText = (distM / 1000.0).format("%.2f") + " km";
+        if (track.distance >= 1000.0) {
+            distText = (track.distance / 1000.0).format("%.2f") + " km";
         } else {
-            distText = distM.toNumber().toString() + " m";
+            distText = track.distance.toNumber().toString() + " m";
         }
         dc.setColor(Graphics.COLOR_BLACK, Graphics.COLOR_TRANSPARENT);
         dc.drawText(W / 2, H - 52, Graphics.FONT_XTINY, distText, Graphics.TEXT_JUSTIFY_CENTER);
