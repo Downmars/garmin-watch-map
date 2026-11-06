@@ -1,0 +1,3 @@
+project.manifest = app/manifest.xml
+base.sourcePath = app/source;tests/monkeyc
+base.resourcePath = app/resources

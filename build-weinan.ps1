@@ -4,7 +4,9 @@ param(
     [double]$Km = 20,
     [int]$Zoom = 15,
     [switch]$CompileOnly,
-    [switch]$Direct
+    [switch]$Direct,
+    [switch]$TestBuild,
+    [string]$OutFile = 'dist\weinan-fr255.prg'
 )
 $ErrorActionPreference = 'Stop'
 $repoRoot = $PSScriptRoot
@@ -36,10 +38,13 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'Map generation failed; rerun to resume cached downloads.' }
     }
     if (-not (Test-Path 'app\source\MapData.mc')) { throw 'No generated map. Run without -CompileOnly first.' }
-    & $javaExe '-Xmx4g' '-Dfile.encoding=UTF-8' '-jar' (Join-Path $sdkRoot 'bin\monkeybrains.jar') `
-        '-f' 'app\monkey.jungle' '-o' 'dist\weinan-fr255.prg' '-d' 'fr255' '-y' $keyFile
+    $jungle = if ($TestBuild) { 'test.jungle' } else { 'app\monkey.jungle' }
+    $compileArgs = @('-Xmx4g', '-Dfile.encoding=UTF-8', '-jar', (Join-Path $sdkRoot 'bin\monkeybrains.jar'),
+        '-f', $jungle, '-o', $OutFile, '-d', 'fr255', '-y', $keyFile)
+    if ($TestBuild) { $compileArgs += '-t' }
+    & $javaExe @compileArgs
     if ($LASTEXITCODE -ne 0) { throw 'Garmin compilation failed.' }
-    Get-Item 'dist\weinan-fr255.prg' | Select-Object FullName, Length
+    Get-Item $OutFile | Select-Object FullName, Length
 } finally {
     Pop-Location
     $env:TEMP = $savedTemp
