@@ -4,6 +4,7 @@ using Toybox.Math;
 class TrackModel {
     const CAPACITY = 800;
     var points;
+    var projected;
     var head = 0;
     var count = 0;
     var distance = 0.0;
@@ -11,16 +12,22 @@ class TrackModel {
     var pendingBreak = true;
     var revision = 0;
 
-    function initialize() { points = new [CAPACITY]; }
+    function initialize() { points = new [CAPACITY]; projected = new [CAPACITY]; }
     function clear() {
-        points = new [CAPACITY]; head = 0; count = 0; distance = 0.0;
+        points = new [CAPACITY]; projected = new [CAPACITY]; head = 0; count = 0; distance = 0.0;
         previous = null; pendingBreak = true; revision++;
     }
     function size() { return count; }
     function point(index) { return points[(head + index) % CAPACITY]; }
+    function projectedPoint(index) { return projected[(head + index) % CAPACITY]; }
+    function project(value) { return MapProjection.point(value[0], value[1]); }
     function append(value) {
-        if (count < CAPACITY) { points[(head + count) % CAPACITY] = value; count++; }
-        else { points[head] = value; head = (head + 1) % CAPACITY; }
+        var slot = (head + count) % CAPACITY;
+        if (count < CAPACITY) { count++; }
+        else { head = (head + 1) % CAPACITY; }
+        points[slot] = value;
+        // Fixed-capacity render cache; raw coordinates and persistence stay unchanged.
+        projected[slot] = value == null ? null : project(value);
         revision++;
     }
     function breakSegment() { previous = null; pendingBreak = true; }

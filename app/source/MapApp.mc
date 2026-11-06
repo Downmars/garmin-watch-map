@@ -129,16 +129,9 @@ class MapView extends WatchUi.View {
         if (needsUpdate) { WatchUi.requestUpdate(); }
     }
 
-    function lonToGX(lon) {
-        return (lon + 180.0) / 360.0 * MapData.WORLD;
-    }
+    function lonToGX(lon) { return MapProjection.x(lon); }
 
-    function latToGY(lat) {
-        if (lat > 85.05112878) { lat = 85.05112878; }
-        if (lat < -85.05112878) { lat = -85.05112878; }
-        var rad = lat * Math.PI / 180.0;
-        return (1.0 - Math.log(Math.tan(rad) + 1.0 / Math.cos(rad), 2.718281828459045) / Math.PI) / 2.0 * MapData.WORLD;
-    }
+    function latToGY(lat) { return MapProjection.y(lat); }
 
     function gxToLon(gx) {
         return gx / MapData.WORLD * 360.0 - 180.0;
@@ -482,20 +475,7 @@ class MapView extends WatchUi.View {
             }
         }
 
-        if (track.size() > 1) {
-            dc.setColor(0x8B0000, Graphics.COLOR_TRANSPARENT);
-            for (var k = 1; k < track.size(); k++) {
-                if (track.point(k - 1) == null || track.point(k) == null) { continue; }
-                var ax = lonToGX(track.point(k - 1)[1]) - left;
-                var ay = latToGY(track.point(k - 1)[0]) - top;
-                var bx = lonToGX(track.point(k)[1]) - left;
-                var by = latToGY(track.point(k)[0]) - top;
-                dc.drawLine(ax, ay, bx, by);
-                dc.drawLine(ax + 1, ay, bx + 1, by);
-                dc.drawLine(ax, ay + 1, bx, by + 1);
-                dc.drawLine(ax + 1, ay + 1, bx + 1, by + 1);
-            }
-        }
+        TrackRenderer.draw(dc, track, left, top, W, H);
 
         if (loc != null) {
             var deg = loc.toDegrees();
