@@ -1,0 +1,36 @@
+# --- build outputs ---
+dist/
+temp/
+*.prg
+*.prg.debug.xml
+*.bak
+sim_out.txt
+gen/
+mir/
+internal-mir/
+
+# --- local Connect IQ SDK / JDK drop-ins ---
+appdata/
+tools/jdk17/
+tools/ciqcli/
+tools/*.zip
+tools/*.tar.gz
+
+# --- generated tile assets (downloaded at build time, OSM ODbL) ---
+app/resources/drawables/tile_*.png
+app/resources/drawables/drawables.xml
+app/source/MapData.mc
+app/resources/vec.bin
+maps/
+packs/
+
+# --- secrets: never commit ---
+developer_key.der
+developer_key.pem
+
+# --- OS junk ---
+.DS_Store
+Thumbs.db
+desktop.ini
+__pycache__/
+*.pyc

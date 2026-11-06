@@ -1,0 +1,20 @@
+<iq:manifest xmlns:iq="http://www.garmin.com/xml/connectiq" version="3">
+  <iq:application
+      id="c4e1b7a30d9f42a8b6c5d4e3f2a19087"
+      type="datafield"
+      name="@Strings.AppName"
+      entry="MapDataField"
+      launcherIcon="@Drawables.LauncherIcon"
+      minSdkVersion="3.0.0">
+    <iq:products>
+      <iq:product id="fr255"/>
+    </iq:products>
+    <iq:permissions>
+      <iq:uses-permission id="Positioning"/>
+    </iq:permissions>
+    <iq:languages>
+      <iq:language>eng</iq:language>
+      <iq:language>chi</iq:language>
+    </iq:languages>
+  </iq:application>
+</iq:manifest>

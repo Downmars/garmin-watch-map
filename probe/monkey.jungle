@@ -1,0 +1,3 @@
+base.barrelPath = source
+base.resourcePath = resources
+project.manifest = manifest.xml

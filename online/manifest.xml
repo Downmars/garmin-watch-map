@@ -1,0 +1,24 @@
+<iq:manifest xmlns:iq="http://www.garmin.com/xml/connectiq" version="3">
+  <iq:application
+      id="d4e5f6a7b8c94d0e8f1a2b3c4d5e6f70"
+      type="watch-app"
+      name="@Strings.AppName"
+      entry="OnlineApp"
+      launcherIcon="@Drawables.LauncherIcon"
+      minSdkVersion="3.0.0">
+    <iq:products>
+      <iq:product id="fr255"/>
+      <iq:product id="venu441mm"/>
+      <iq:product id="venu445mm"/>
+    </iq:products>
+    <iq:permissions>
+      <iq:uses-permission id="Positioning"/>
+      <iq:uses-permission id="Communications"/>
+      <iq:uses-permission id="Sensor"/>
+    </iq:permissions>
+    <iq:languages>
+      <iq:language>eng</iq:language>
+      <iq:language>chi</iq:language>
+    </iq:languages>
+  </iq:application>
+</iq:manifest>

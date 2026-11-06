@@ -1,0 +1,4 @@
+<drawables>
+  <bitmap id="MapWide" filename="map_wide.png"/>
+  <bitmap id="LauncherIcon" filename="launcher.png"/>
+</drawables>

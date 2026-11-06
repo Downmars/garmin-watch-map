@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    name: Syntax & sanity checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Pillow
+        run: pip install pillow
+
+      - name: Python syntax
+        run: |
+          python -m py_compile $(find tools -name '*.py')
+          echo "python syntax OK"
+
+      - name: XML well-formedness
+        run: |
+          python - <<'PY'
+          import glob, xml.etree.ElementTree as ET
+          files = [f for f in glob.glob("**/*.xml", recursive=True)]
+          for f in files:
+              ET.parse(f)
+          print(f"{len(files)} XML files OK")
+          PY
+
+      - name: No private keys committed
+        run: |
+          if git ls-files | grep -Ei 'developer_key\.(der|pem)$|\.p12$'; then
+            echo "::error::private key found in repo"
+            exit 1
+          fi
+          echo "no keys committed"
+
+      - name: No generated tiles committed
+        run: |
+          if git ls-files | grep -E 'tile_[0-9]+_[0-9]+\.png$'; then
+            echo "::error::generated OSM tiles found in repo (ODbL + size)"
+            exit 1
+          fi
+          echo "no generated tiles committed"
+
+  manifest:
+    name: Connect IQ manifests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate manifest structure
+        run: |
+          python - <<'PY'
+          import glob, xml.etree.ElementTree as ET
+          ns = {"iq": "http://www.garmin.com/xml/connectiq"}
+          required = ["fr255"]
+          for f in sorted(glob.glob("*/manifest.xml")):
+              root = ET.parse(f).getroot()
+              app = root.find("iq:application", ns)
+              if app is None:
+                  raise SystemExit(f"{f}: missing iq:application")
+              atype = app.get("type")
+              if atype not in ("watch-app", "widget", "datafield", "watchface"):
+                  raise SystemExit(f"{f}: suspicious app type {atype!r}")
+              products = [p.get("id") for p in app.iterfind(".//iq:product", ns)]
+              if not products:
+                  raise SystemExit(f"{f}: no <iq:product>")
+              if "fr255" not in products:
+                  print(f"::warning file={f}::fr255 missing from products")
+              print(f"ok {f}: type={atype} products={','.join(products)}")
+          PY

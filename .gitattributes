@@ -1,0 +1,13 @@
+* text=auto
+
+*.png binary
+*.jpg binary
+*.prg binary
+*.der binary
+*.pem binary
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+*.mc text
+*.py text
+*.xml text
+*.md text
