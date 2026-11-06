@@ -1,0 +1,27 @@
+name: FR255 问题反馈
+description: 记录版本、设备和复现方法，请勿上传个人原始轨迹或签名密钥。
+title: '[FR255] '
+body:
+  - type: input
+    id: version
+    attributes:
+      label: 应用版本 / 源码提交
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: 手表型号 / 固件版本
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤、实际结果与期望结果
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 验证证据
+      description: 可填写经过处理的错误栈、测试编号、电量与耗时；先移除真实位置、账号和其他个人信息。
