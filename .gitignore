@@ -28,6 +28,10 @@ packs/
 # --- secrets: never commit ---
 developer_key.der
 developer_key.pem
+*.der
+*.pem
+*.gpx
+!examples/routes/*.gpx
 
 # --- OS junk ---
 .DS_Store

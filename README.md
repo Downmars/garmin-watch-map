@@ -4,7 +4,9 @@
 
 **先看 [迭代计划](docs/ROADMAP.md)、[设备与方案调研](docs/RESEARCH.md)、[验证标准](docs/VALIDATION.md)、[版本记录](CHANGELOG.md)。**
 
-当前候选版为 **v0.4.0-alpha.1**，增加街道/概览双级地图、比例尺及缩放按键模式。见 [v0.4 操作说明](docs/INSTALL-V04.md) 和 [验证报告](docs/verification-v0.4-alpha.1.md)。这是实机待验收候选版。
+当前候选版 **v0.5.0-alpha.2** 提供 Windows 桌面制包器。选地区、导入 GPX 或在预览地图上手绘路线，生成可分享的 FR255 安装 ZIP。制包器在生成底图前检查 FR255 设备配置。手表菜单可以离线切换包里的地区和路线。见 [制包器说明](docs/STUDIO.md) 和 [手表操作](docs/INSTALL-V05.md)。普通安装者只需复制 PRG，制包者首次配置 Garmin SDK、Java 和签名。
+
+v0.4.0-alpha.1 已交付街道/概览双级地图、比例尺及缩放按键模式。见 [v0.4 验证报告](docs/verification-v0.4-alpha.1.md)。
 
 用户已反馈 v0.3.0-alpha.3 功能暂且正常，见 [阶段反馈](docs/acceptance-v0.3.md)，其原包继续作为回退点。v0.3 alpha.1/alpha.2 有长轨迹恢复超时问题，不建议回退到这两版。v0.4 按 [方案](docs/PLAN-V04.md) 分阶段实现；最近轨迹概览入口和地图信息页留待后续。
 

@@ -1,0 +1,32 @@
+name: Windows desktop maker
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'tools/**'
+      - 'app/**'
+      - 'examples/**'
+      - 'docs/INSTALL-V05.md'
+      - '.github/workflows/studio.yml'
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    env:
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install Pillow pyinstaller==6.16.0
+      - run: python -m unittest discover -s tests -v
+      - run: python tools/atlas.py examples/atlas.json --check
+      - run: python tools/freeze_studio.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FR255-Atlas-Studio-Windows-x64
+          path: |
+            dist/FR255-Atlas-Studio.exe
+            docs/STUDIO.md

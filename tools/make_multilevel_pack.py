@@ -31,7 +31,7 @@ def layer_grids(lat, lon, km):
     return levels
 
 
-def generate(app, output, cache_dir, lat, lon, km):
+def generate(app, output, cache_dir, lat, lon, km, tag='', progress=None):
     app, output = Path(app), Path(output)
     levels = layer_grids(lat, lon, km)
     output.mkdir(parents=True, exist_ok=True)
@@ -49,11 +49,14 @@ def generate(app, output, cache_dir, lat, lon, km):
                         for dx in range(2):
                             tile.paste(city.fetch_tile(layer['zoom'], tx + dx, ty + dy, cache,
                                                        cache_dir=str(cache_dir)), (dx * 256, dy * 256))
-                    name = f"tile_z{layer['zoom']}_{row}_{col}.png"
+                    name = f"tile_{tag}z{layer['zoom']}_{row}_{col}.png"
                     tile.save(stage / name, 'PNG', optimize=True)
-                    resources.append(f"Rez.Drawables.Tile_z{layer['zoom']}_{row}_{col}")
+                    resources.append(f"Rez.Drawables.Tile_{tag}z{layer['zoom']}_{row}_{col}")
                     names.append(name)
-                    print(f"ready {name}", flush=True)
+                    if progress is None:
+                        print(f"ready {name}", flush=True)
+                    else:
+                        progress(name)
             layer['resources'] = resources
         base = levels[0]
         data = ('module MapData {\n'
