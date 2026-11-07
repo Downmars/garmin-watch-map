@@ -105,7 +105,8 @@ def settings_defaults():
     if not sdk and cfg.is_file():
         sdk = cfg.read_text(encoding='utf-8-sig').strip()
     java = os.environ.get('CIQ_JAVA') or shutil.which('java') or ''
-    values = dict(sdk=sdk,java=java,key=os.environ.get('CIQ_KEY',str(home/'developer_key.der')),cache=os.environ.get('ATLAS_TILE_CACHE',str(home/'tiles')))
+    values = dict(sdk=sdk,java=java,key=os.environ.get('CIQ_KEY',str(home/'developer_key.der')),
+                  cache=os.environ.get('ATLAS_TILE_CACHE',str(home/'tiles')),devices=os.environ.get('CIQ_DEVICES',''))
     try:
         stored = json.loads((home/'studio.json').read_text(encoding='utf-8'))
         values.update({k:v for k,v in stored.items() if k in values and isinstance(v,str)})
@@ -390,7 +391,8 @@ class Studio:
             (path/'studio.json').write_text(json.dumps(v,ensure_ascii=False),encoding='utf-8')
             self.settings=v
         dlg,area,v=self.form('制包设置',[(k,l,self.settings[k],mode) for k,l,mode in [
-            ('sdk','Garmin SDK 目录','dir'),('java','Java 17 程序','file'),('key','签名文件 .der','file'),('cache','底图缓存目录','dir')]],accept)
+            ('sdk','Garmin SDK 目录','dir'),('java','Java 17 程序','file'),('key','签名文件 .der','file'),
+            ('cache','底图缓存目录','dir'),('devices','FR255 设备目录（留空自动查找）','dir')]],accept)
         def keygen():
             target=filedialog.asksaveasfilename(parent=dlg,defaultextension='.der',initialfile='developer_key.der')
             if not target: return
@@ -399,7 +401,7 @@ class Studio:
                 run_tool([v['java'].get(),ROOT/'tools/SigningKey.java',target],Path(target).parent,lambda msg:None)
                 v['key'].set(target)
             except Exception as e: messagebox.showerror('生成签名失败',str(e),parent=dlg)
-        ttk.Button(area,text='创建新签名…',command=keygen).grid(column=0,row=4,sticky='w')
+        ttk.Button(area,text='创建新签名…',command=keygen).grid(column=0,row=5,sticky='w')
 
     def job(self,title,fn):
         self.busy=True; self.status.config(text=title)
@@ -423,7 +425,8 @@ class Studio:
         output=filedialog.asksaveasfilename(initialfile='FR255-离线地图.zip',defaultextension='.zip')
         if output:
             def task():
-                meta=build(obj,Path.cwd(),output,v['sdk'],v['java'],v['key'],v['cache'],lambda s:self.events.put(('log',s)))
+                meta=build(obj,Path.cwd(),output,v['sdk'],v['java'],v['key'],v['cache'],
+                           lambda s:self.events.put(('log',s)),devices=v['devices'])
                 return f"已生成 {output}（{meta['bytes']:,} 字节）"
             self.job('正在生成安装包',task)
 

@@ -18,7 +18,7 @@ from gpx_route import read_gpx, simplify
 from make_multilevel_pack import generate, layer_grids
 
 ROOT = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parents[1]))
-VERSION = '0.5.0-alpha.1'
+VERSION = '0.5.0-alpha.2'
 MAX_IMAGES = 180
 MAX_BYTES = 15_000_000
 
@@ -130,19 +130,64 @@ def create_app(app, scratch, cache, plan, progress):
     (app/'source/MapCatalog.mc').write_text('module MapCatalog { var REGIONS = ['+',\n'.join(records)+']; }\n', encoding='utf-8')
 
 
+def garmin_data_roots():
+    if sys.platform == 'win32':
+        roaming = os.environ.get('APPDATA')
+        fallback = Path.home()/'AppData/Roaming'
+        parents = [Path(roaming), fallback] if roaming else [fallback]
+        return list(dict.fromkeys(p/'Garmin/ConnectIQ' for p in parents))
+    if sys.platform == 'darwin':
+        return [Path.home()/'Library/Application Support/Garmin/ConnectIQ']
+    return [Path.home()/'.Garmin/ConnectIQ']
+
+
+def fr255_profile(explicit=None):
+    """Return the validated profile folder used for this compiler invocation."""
+    locations = []
+    if explicit:
+        p = Path(explicit).expanduser()
+        locations = [p, p/'fr255', p/'Devices/fr255']
+    else:
+        for root in garmin_data_roots():
+            redirect = root/'sdkmanager-download-location.cfg'
+            if redirect.is_file():
+                try:
+                    lines = redirect.read_text(encoding='utf-8-sig').splitlines()
+                except (OSError, UnicodeError):
+                    lines = []
+                if lines and lines[0].strip():
+                    locations.append(Path(lines[0].strip())/'Devices/fr255')
+            locations.append(root/'Devices/fr255')
+    checked = []
+    for folder in dict.fromkeys(locations):
+        checked.append(str(folder))
+        try:
+            config = json.loads((folder/'compiler.json').read_text(encoding='utf-8-sig'))
+            if (isinstance(config, dict) and config.get('deviceId') == 'fr255'
+                    and (folder/'fr255.bin').stat().st_size > 0):
+                return folder.resolve()
+        except (OSError, UnicodeError, ValueError):
+            continue
+    raise ValueError('未找到完整的普通 Forerunner 255 设备配置。请在 Garmin SDK Manager 的 Devices 中安装或更新 Forerunner 255，'
+                     '或在「制包设置」中选择已有的 Devices/fr255 目录。已检查：\n'+'\n'.join(checked))
+
+
 def run_tool(args, cwd, progress):
     with subprocess.Popen([str(v) for v in args], cwd=cwd, stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace',
             creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0)) as process:
         tail = []
+        first_error = None
         for line in process.stdout:
             tail = (tail+[line.rstrip()])[-12:]
+            if first_error is None and line.lstrip().startswith('ERROR:'):
+                first_error = line.strip()
             progress(line.rstrip())
         if process.wait():
-            raise ValueError('Garmin 工具执行失败\n'+'\n'.join(tail))
+            raise ValueError('Garmin 工具执行失败\n'+(first_error or '\n'.join(tail)))
 
 
-def build(project, folder, output, sdk, java, key, cache, progress=print, test=False):
+def build(project, folder, output, sdk, java, key, cache, progress=print, test=False, devices=None):
     plan = prepare(project, folder)
     jar = Path(sdk).resolve()/'bin/monkeybrains.jar'
     key = Path(key).resolve()
@@ -150,6 +195,8 @@ def build(project, folder, output, sdk, java, key, cache, progress=print, test=F
     for dep in (jar, key, Path(java)):
         if not dep.is_file():
             raise ValueError(f"缺少制包工具或签名文件：{dep}")
+    profile = fr255_profile(devices)
+    progress(f"FR255 设备配置：{profile}")
     output = Path(output).resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='atlas-',dir=output.parent) as private:
@@ -157,7 +204,8 @@ def build(project, folder, output, sdk, java, key, cache, progress=print, test=F
         app = scratch/'app'
         create_app(app,scratch,Path(cache).resolve(),plan,progress)
         prg = scratch/'weinan-fr255.prg'  # Same filename as earlier sideloads.
-        args = [java,'-Xmx2g','-Dfile.encoding=UTF-8','-jar',jar,'-f','monkey.jungle','-d','fr255','-y',key,'-o',prg]
+        args = [java,'-Xmx2g','-Dfile.encoding=UTF-8','-jar',jar,'-f','monkey.jungle',
+                '--override-devices-json',profile,'-d','fr255','-y',key,'-o',prg]
         if test:
             shutil.copytree(ROOT/'tests/monkeyc',app/'tests')
             with (app/'monkey.jungle').open('a',encoding='utf-8') as f:
@@ -193,6 +241,7 @@ def main():
     parser.add_argument('--sdk',default=os.environ.get('CIQ_SDK',''))
     parser.add_argument('--java',default=os.environ.get('CIQ_JAVA','java'))
     parser.add_argument('--key',default=os.environ.get('CIQ_KEY','developer_key.der'))
+    parser.add_argument('--devices',default=os.environ.get('CIQ_DEVICES'),help='Garmin Devices 或 fr255 配置目录（默认自动查找）')
     parser.add_argument('--cache',type=Path,default=Path('maps/cache/hot'))
     parser.add_argument('--direct',action='store_true')
     parser.add_argument('--tests',action='store_true',help=argparse.SUPPRESS)
@@ -205,7 +254,7 @@ def main():
         for region,layers,routes in prepare(project,folder):
             print(region['name'], sum(l['cols']*l['rows'] for l in layers), 'tiles,',len(routes),'routes')
         return
-    build(project,folder,args.output,args.sdk,args.java,args.key,args.cache,test=args.tests)
+    build(project,folder,args.output,args.sdk,args.java,args.key,args.cache,test=args.tests,devices=args.devices)
 
 
 if __name__ == '__main__':

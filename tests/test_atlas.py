@@ -12,6 +12,36 @@ from atlas_studio import EXAMPLE, load_project, save_project, region_from_gpx
 
 
 class AtlasTests(unittest.TestCase):
+    def test_device_lookup_honors_sdk_manager_relocation_and_exact_model(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)/'original'
+            root.mkdir()
+            relocated=Path(tmp)/'elsewhere'
+            profile=relocated/'Devices/fr255'
+            profile.mkdir(parents=True)
+            (root/'sdkmanager-download-location.cfg').write_text(str(relocated),encoding='utf-8')
+            (profile/'compiler.json').write_text('{"deviceId":"fr255"}',encoding='utf-8')
+            (profile/'fr255.bin').write_bytes(b'test')
+            with patch.object(atlas,'garmin_data_roots',return_value=[root]):
+                self.assertEqual(atlas.fr255_profile(),profile.resolve())
+            self.assertEqual(atlas.fr255_profile(relocated/'Devices'),profile.resolve())
+            (profile/'compiler.json').write_text('{"deviceId":"fr255s"}',encoding='utf-8')
+            with self.assertRaisesRegex(ValueError,'Forerunner 255'):
+                atlas.fr255_profile(profile)
+
+    def test_missing_profile_rejected_before_tile_work_and_zip_replacement(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder=Path(tmp)
+            (folder/'bin').mkdir()
+            (folder/'bin/monkeybrains.jar').touch()
+            key=folder/'example.der'; key.touch()
+            out=folder/'previous.zip'; out.write_bytes(b'previous')
+            with patch.object(atlas,'create_app',side_effect=AssertionError('generated tiles')):
+                with self.assertRaisesRegex(ValueError,'设备配置'):
+                    atlas.build(load_project(EXAMPLE),folder,out,folder,sys.executable,key,folder,
+                                devices=folder/'absent')
+            self.assertEqual(out.read_bytes(),b'previous')
+
     def test_example_project_is_portable_and_keeps_segment_breaks(self):
         with tempfile.TemporaryDirectory() as tmp:
             saved = Path(tmp)/'另一个目录'/'渭南西安.json'
