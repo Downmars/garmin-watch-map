@@ -1,0 +1,454 @@
+"""Windows desktop editor for shareable Garmin FR255 offline map installers."""
+import copy
+import hashlib
+import json
+import math
+import os
+from pathlib import Path
+import queue
+import shutil
+import sys
+import threading
+import tempfile
+import xml.etree.ElementTree as ET
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
+import uuid
+
+from PIL import Image, ImageDraw, ImageTk
+from atlas import ROOT, VERSION, build, prepare, run_tool, validate_label
+from gpx_route import read_gpx
+from make_city_pack import fetch_tile, lon_to_x, lat_to_y
+from make_multilevel_pack import layer_grids
+
+EXAMPLE = ROOT/'examples/atlas.json'
+
+
+def app_data():
+    return Path(os.environ.get('ATLAS_STUDIO_HOME') or os.environ.get('LOCALAPPDATA') or Path.home())/'FR255AtlasStudio'
+
+
+def new_id(prefix):
+    return prefix + uuid.uuid4().hex[:10]
+
+
+def load_project(path):
+    obj = json.loads(Path(path).read_text(encoding='utf-8-sig'))
+    if obj.get('version') != 1 or not isinstance(obj.get('regions'), list):
+        raise ValueError('不支持的项目文件')
+    for region in obj['regions']:
+        for route in region.get('routes', []):
+            route['gpx'] = str((Path(path).parent/route['gpx']).resolve())
+    prepare(obj, Path.cwd()) if obj['regions'] else None
+    return obj
+
+
+def save_project(obj, path):
+    path = Path(path).resolve()
+    copy_obj = copy.deepcopy(obj)
+    for region in copy_obj['regions']:
+        for route in region.get('routes', []):
+            data = Path(route['gpx']).read_bytes()
+            digest = hashlib.sha256(data).hexdigest()
+            asset = path.parent/(path.stem+'-routes')/(digest+'.gpx')
+            asset.parent.mkdir(exist_ok=True)
+            if not asset.exists():
+                asset.write_bytes(data)
+            if hashlib.sha256(asset.read_bytes()).hexdigest() != digest:
+                raise ValueError('项目内的 GPX 副本校验失败')
+            route['gpx'] = asset.relative_to(path.parent).as_posix()
+    tmp = path.with_name(path.name+'.tmp')
+    tmp.write_text(json.dumps(copy_obj,ensure_ascii=False,indent=2),encoding='utf-8')
+    os.replace(tmp,path)
+
+
+def region_from_gpx(path):
+    segments = read_gpx(path)
+    points = [p for seg in segments for p in seg]
+    xs, ys = zip(*points)
+    x = (min(xs)+max(xs))/2
+    y = (min(ys)+max(ys))/2
+    world = 256 << 15
+    lon = x/world*360-180
+    lat = math.degrees(math.atan(math.sinh(math.pi*(1-2*y/world))))
+    meters = 40075016.6856*math.cos(math.radians(lat))/world
+    km = max(1,math.ceil(max(max(xs)-min(xs),max(ys)-min(ys))*meters*1.2/100)/10)
+    if km > 25:
+        raise ValueError('这条路线跨度超过 25 km，请先在 GPX 工具中分段')
+    return lat,lon,km
+
+
+def canvas_location(region, x, y, width, height):
+    base = layer_grids(region['lat'],region['lon'],region['km'])[0]
+    px = base['origin_x'] + x * base['cols'] * 512 / width
+    py = base['origin_y'] + y * base['rows'] * 512 / height
+    world = 256 << 15
+    return math.degrees(math.atan(math.sinh(math.pi*(1-2*py/world)))), px/world*360-180
+
+
+def write_route(path,name,coordinates):
+    if len(set(coordinates)) < 2:
+        raise ValueError('至少点选两个不同的位置')
+    root=ET.Element('gpx',version='1.1',creator='FR255 Atlas Studio',xmlns='http://www.topografix.com/GPX/1/1')
+    track=ET.SubElement(root,'trk')
+    ET.SubElement(track,'name').text=name
+    segment=ET.SubElement(track,'trkseg')
+    for lat,lon in coordinates:
+        ET.SubElement(segment,'trkpt',lat=f'{lat:.7f}',lon=f'{lon:.7f}')
+    ET.ElementTree(root).write(path,encoding='utf-8',xml_declaration=True)
+
+
+def settings_defaults():
+    home = app_data()
+    sdk = os.environ.get('CIQ_SDK','')
+    cfg = Path(os.environ.get('APPDATA',''))/'Garmin/ConnectIQ/current-sdk.cfg'
+    if not sdk and cfg.is_file():
+        sdk = cfg.read_text(encoding='utf-8-sig').strip()
+    java = os.environ.get('CIQ_JAVA') or shutil.which('java') or ''
+    values = dict(sdk=sdk,java=java,key=os.environ.get('CIQ_KEY',str(home/'developer_key.der')),cache=os.environ.get('ATLAS_TILE_CACHE',str(home/'tiles')))
+    try:
+        stored = json.loads((home/'studio.json').read_text(encoding='utf-8'))
+        values.update({k:v for k,v in stored.items() if k in values and isinstance(v,str)})
+    except (FileNotFoundError,ValueError):
+        pass
+    return values
+
+
+def preview_image(region, cache, size, online=False):
+    layers = layer_grids(region['lat'],region['lon'],region['km'])
+    base = layers[0]
+    level = 15 if max(base['cols'],base['rows']) <= 3 else 13
+    factor = 2**(level-15)
+    left,top = int(base['origin_x']*factor),int(base['origin_y']*factor)
+    width,height = int(base['cols']*512*factor),int(base['rows']*512*factor)
+    image = Image.new('RGB',(width,height),'#e3e9e3')
+    pen = ImageDraw.Draw(image)
+    hits = 0
+    for tx in range(left//256,(left+width-1)//256+1):
+        for ty in range(top//256,(top+height-1)//256+1):
+            xy = (tx*256-left,ty*256-top)
+            path = Path(cache)/str(level)/str(tx)/(str(ty)+'.png')
+            if online or path.exists():
+                tile = fetch_tile(level,tx,ty,{},cache_dir=str(cache))
+                image.paste(tile,xy)
+                hits += 1
+            else:
+                pen.rectangle([xy,(xy[0]+255,xy[1]+255)],outline='#c6d0c8')
+    image.thumbnail(size,Image.Resampling.LANCZOS)
+    sx,sy=image.width/width,image.height/height
+    pen=ImageDraw.Draw(image)
+    for route in region.get('routes',[]):
+        for line in read_gpx(route['gpx']):
+            pts=[((x*factor-left)*sx,(y*factor-top)*sy) for x,y in line]
+            pen.line(pts, fill='#145bc2',width=3)
+            x,y=pts[0]
+            pen.ellipse([x-3,y-3,x+3,y+3],fill='#176045')
+    return image,hits
+
+
+class Studio:
+    def __init__(self, root):
+        self.root = root
+        root.title('离线地图制包器 · FR255')
+        root.geometry('960x680')
+        root.minsize(820,600)
+        self.project = load_project(EXAMPLE)
+        self.path = None
+        self.settings = settings_defaults()
+        self.dirty = False
+        self.busy = False
+        self.events = queue.Queue()
+        self.photo = None
+        root.protocol('WM_DELETE_WINDOW',self.close)
+        style = ttk.Style(root)
+        style.configure('Title.TLabel',font=('Microsoft YaHei UI',16,'bold'))
+        style.configure('Section.TLabel',font=('Microsoft YaHei UI',11,'bold'))
+        style.configure('Build.TButton',font=('Microsoft YaHei UI',10,'bold'))
+        shell = ttk.Frame(root,padding=15)
+        shell.pack(fill='both',expand=True)
+        bar=ttk.Frame(shell); bar.pack(fill='x',pady=(0,12))
+        ttk.Label(bar,text='离线地图制包器',style='Title.TLabel').pack(side='left')
+        for label,fn in [('制包设置',self.configure),('保存项目',self.save),('打开项目',self.open),('新项目',self.new)]:
+            ttk.Button(bar,text=label,command=lambda f=fn:self.guard(f)).pack(side='right',padx=2)
+        middle=ttk.Frame(shell); middle.pack(fill='both',expand=True)
+        left=ttk.Frame(middle); left.pack(side='left',fill='y',padx=(0,14))
+        ttk.Label(left,text='地图地区',style='Section.TLabel').pack(anchor='w')
+        self.regions=tk.Listbox(left,width=24,height=7,exportselection=False)
+        self.regions.pack(fill='both',expand=True,pady=5)
+        self.regions.bind('<<ListboxSelect>>',lambda e:self.guard(self.refresh_detail))
+        self.buttons(left,[('添加',lambda:self.edit_region(True)),('编辑',lambda:self.edit_region(False)),('移除',self.remove_region)])
+        ttk.Button(left,text='从 GPX 建立地区',command=lambda:self.guard(self.from_gpx)).pack(fill='x',pady=5)
+        ttk.Label(left,text='该地区的路线',style='Section.TLabel').pack(anchor='w',pady=(9,0))
+        self.routes=tk.Listbox(left,width=24,height=5,exportselection=False)
+        self.routes.pack(fill='both',expand=True,pady=5)
+        self.buttons(left,[('导入 GPX',self.import_routes),('手绘路线',self.draw_route),('移除',self.remove_route)])
+        right=ttk.Frame(middle); right.pack(side='left',fill='both',expand=True)
+        top=ttk.Frame(right); top.pack(fill='x')
+        self.map_title=ttk.Label(top,text='覆盖范围',style='Section.TLabel'); self.map_title.pack(side='left')
+        ttk.Button(top,text='载入预览底图',command=lambda:self.guard(self.fetch_preview)).pack(side='right')
+        self.canvas=tk.Canvas(right,bg='#e3e9e3',highlightthickness=0,width=480,height=280)
+        self.canvas.pack(fill='both',expand=True,pady=(5,4))
+        self.detail=ttk.Label(right,wraplength=540); self.detail.pack(anchor='w')
+        self.log=tk.Text(shell,height=4,wrap='word',state='disabled')
+        self.log.pack(fill='x',pady=(9,5))
+        footer=ttk.Frame(shell); footer.pack(fill='x')
+        self.status=ttk.Label(footer,text='就绪'); self.status.pack(side='left')
+        ttk.Button(footer,text='生成手表安装包…',style='Build.TButton',command=lambda:self.guard(self.start_build)).pack(side='right')
+        root.after_idle(lambda:self.refresh(0))
+        root.after(120,self.poll)
+
+    def guard(self,fn):
+        if self.busy: return
+        try: fn()
+        except Exception as exc: messagebox.showerror('操作未完成',str(exc),parent=self.root)
+
+    def buttons(self,parent,items):
+        row=ttk.Frame(parent); row.pack(fill='x')
+        for name,fn in items:
+            ttk.Button(row,text=name,width=7,command=lambda f=fn:self.guard(f)).pack(side='left',expand=True,fill='x')
+
+    def index(self):
+        sel=self.regions.curselection()
+        if not sel: raise ValueError('请先选择地区')
+        return sel[0]
+
+    def refresh(self,idx=0):
+        self.regions.delete(0,'end')
+        for r in self.project['regions']: self.regions.insert('end',r['name'])
+        if self.project['regions']:
+            self.regions.selection_set(min(idx,len(self.project['regions'])-1))
+        self.refresh_detail()
+
+    def refresh_detail(self):
+        self.routes.delete(0,'end')
+        self.canvas.delete('all')
+        if not self.regions.curselection():
+            self.detail.config(text='添加地区或从 GPX 建立地区'); self.map_title.config(text='覆盖范围'); return
+        r=self.project['regions'][self.index()]
+        for t in r['routes']: self.routes.insert('end',t['name'])
+        self.map_title.config(text=r['name'])
+        w=max(360,self.canvas.winfo_width()-8); h=max(210,self.canvas.winfo_height()-8)
+        image,hits=preview_image(r,self.settings['cache'],(w,h))
+        self.photo=ImageTk.PhotoImage(image,master=self.root)
+        self.canvas.create_image(w/2,h/2,image=self.photo)
+        label='缓存底图' if hits else '范围示意图，可载入底图'
+        self.detail.config(text=f"{r['lat']:.4f}°, {r['lon']:.4f}°   ·   {r['km']:g} km   ·   {label}\n© OpenStreetMap contributors · 底图 OpenStreetMap France")
+
+    def changed(self):
+        self.dirty=True
+        self.status.config(text='项目有未保存的修改')
+
+    def can_replace(self):
+        return not self.dirty or messagebox.askyesno('项目尚未保存','放弃当前项目的修改？',parent=self.root)
+
+    def new(self):
+        if self.can_replace():
+            self.project={'version':1,'regions':[]}; self.path=None; self.dirty=False
+            self.refresh(); self.status.config(text='新项目')
+
+    def open(self):
+        path=filedialog.askopenfilename(filetypes=[('地图项目','*.json')])
+        if path and self.can_replace():
+            obj=load_project(path)
+            self.project=obj; self.path=Path(path); self.dirty=False
+            self.refresh(); self.status.config(text=self.path.name)
+
+    def save(self):
+        path=filedialog.asksaveasfilename(initialfile=self.path.name if self.path else '地图项目.json',
+            defaultextension='.json',filetypes=[('地图项目','*.json')])
+        if path:
+            save_project(self.project,path)
+            self.path=Path(path); self.dirty=False; self.status.config(text='已保存 '+self.path.name)
+
+    def close(self):
+        if self.busy: messagebox.showinfo('正在处理','请等待当前任务结束',parent=self.root); return
+        if self.can_replace(): self.root.destroy()
+
+    def form(self,title,fields,apply):
+        dlg=tk.Toplevel(self.root); dlg.title(title); dlg.transient(self.root); dlg.grab_set()
+        area=ttk.Frame(dlg,padding=16); area.pack(fill='both',expand=True)
+        values={}
+        for n,(key,label,initial,kind) in enumerate(fields):
+            ttk.Label(area,text=label).grid(column=0,row=n,sticky='w',padx=(0,8),pady=4)
+            v=tk.StringVar(dlg,value=str(initial)); values[key]=v
+            ttk.Entry(area,textvariable=v,width=45).grid(column=1,row=n,sticky='ew')
+            if kind:
+                def pick(var=v,mode=kind):
+                    value=filedialog.askdirectory(parent=dlg) if mode=='dir' else filedialog.askopenfilename(parent=dlg)
+                    if value: var.set(value)
+                ttk.Button(area,text='选择',width=6,command=pick).grid(column=2,row=n)
+        def submit():
+            try: apply({k:v.get().strip() for k,v in values.items()})
+            except Exception as exc: messagebox.showerror(title,str(exc),parent=dlg); return
+            dlg.destroy()
+        ttk.Button(area,text='确定',command=submit).grid(column=1,row=len(fields),sticky='e',pady=(10,0))
+        return dlg,area,values
+
+    def edit_region(self,new,seed=None):
+        regions=self.project['regions']
+        if new and len(regions)>=8: raise ValueError('每个项目最多 8 个地区')
+        region=seed or (dict(id=new_id('m'),name='新地区',lat=34.5,lon=109.5,km=3,routes=[]) if new else copy.deepcopy(regions[self.index()]))
+        def accept(values):
+            updated={**region,'name':values['name'],'lat':float(values['lat']),'lon':float(values['lon']),'km':float(values['km'])}
+            target=len(regions) if new else self.index()
+            proposed=list(regions)
+            if new: proposed.append(updated)
+            else: proposed[target]=updated
+            prepare(dict(version=1,regions=proposed),Path.cwd())
+            self.project['regions']=proposed; self.changed(); self.refresh(target)
+        self.form('地图地区',[(k,l,region[k],None) for k,l in
+                  [('name','名称'),('lat','中心纬度 WGS84'),('lon','中心经度 WGS84'),('km','区域边长（公里）')]],accept)
+
+    def from_gpx(self):
+        path=filedialog.askopenfilename(filetypes=[('GPX 路线','*.gpx')])
+        if not path: return
+        lat,lon,km=region_from_gpx(path)
+        route=self.make_route(path)
+        self.edit_region(True,dict(id=new_id('m'),name=route['name'],lat=round(lat,6),lon=round(lon,6),km=km,routes=[route]))
+
+    @staticmethod
+    def make_route(path):
+        name=''.join(c for c in Path(path).stem if c.isalnum() or c in ' -_')[:18].strip() or '路线'
+        return dict(id=new_id('t'),name=name,gpx=str(Path(path).resolve()))
+
+    def import_routes(self):
+        index=self.index()
+        paths=filedialog.askopenfilenames(filetypes=[('GPX 路线','*.gpx')])
+        if not paths: return
+        proposed=copy.deepcopy(self.project)
+        proposed['regions'][index]['routes'].extend(self.make_route(p) for p in paths)
+        prepare(proposed,Path.cwd())
+        self.project=proposed; self.changed(); self.refresh(index)
+
+    def draw_route(self):
+        index=self.index()
+        region=self.project['regions'][index]
+        image,_=preview_image(region,self.settings['cache'],(640,420))
+        dlg=tk.Toplevel(self.root); dlg.title('手绘路线 · '+region['name'])
+        dlg.transient(self.root); dlg.grab_set()
+        ttk.Label(dlg,text='依次点击途经点，相邻点以直线相连。').pack(anchor='w',padx=12,pady=8)
+        canvas=tk.Canvas(dlg,width=image.width,height=image.height,highlightthickness=0,cursor='crosshair')
+        canvas.pack(padx=12)
+        photo=ImageTk.PhotoImage(image,master=dlg)
+        canvas.create_image(0,0,anchor='nw',image=photo); canvas.photo=photo
+        points=[]
+        def redraw():
+            canvas.delete('draft')
+            if len(points)>=2:
+                canvas.create_line(*[v for pair in points for v in pair],fill='#aa381d',width=3,tags='draft')
+            for x,y in points:
+                canvas.create_oval(x-3,y-3,x+3,y+3,fill='#aa381d',outline='white',tags='draft')
+        def click(e):
+            if 0 <= e.x < image.width and 0 <= e.y < image.height:
+                points.append((e.x,e.y)); redraw()
+        canvas.bind('<Button-1>',click)
+        row=ttk.Frame(dlg,padding=12); row.pack(fill='x')
+        name=tk.StringVar(dlg,value='手绘路线')
+        ttk.Entry(row,textvariable=name,width=19).pack(side='left')
+        def undo():
+            if points: points.pop(); redraw()
+        ttk.Button(row,text='撤销一点',command=undo).pack(side='left',padx=4)
+        def save():
+            try:
+                route=dict(id=new_id('t'),name=name.get().strip())
+                validate_label(route)
+                coords=[canvas_location(region,x,y,image.width,image.height) for x,y in points]
+                with tempfile.TemporaryDirectory() as folder:
+                    scratch=Path(folder)/'route.gpx'
+                    write_route(scratch,route['name'],coords)
+                    proposed=copy.deepcopy(self.project)
+                    route['gpx']=str(scratch)
+                    proposed['regions'][index]['routes'].append(route)
+                    prepare(proposed,Path.cwd())
+                    dest=filedialog.asksaveasfilename(parent=dlg,initialfile=route['name']+'.gpx',defaultextension='.gpx')
+                    if not dest: return
+                    target=Path(dest)
+                    with tempfile.NamedTemporaryFile(dir=target.parent,delete=False) as f:
+                        temp=Path(f.name); f.write(scratch.read_bytes())
+                    try: os.replace(temp,target)
+                    finally: temp.unlink(missing_ok=True)
+                    route['gpx']=str(target.resolve())
+                    self.project=proposed
+                dlg.destroy(); self.changed(); self.refresh(index)
+            except Exception as e: messagebox.showerror('保存路线失败',str(e),parent=dlg)
+        ttk.Button(row,text='保存 GPX 并加入项目',command=save).pack(side='right')
+
+    def remove_region(self):
+        n=self.index()
+        if messagebox.askyesno('移除地区','从本项目移除所选地区和其中的路线？'):
+            del self.project['regions'][n]; self.changed(); self.refresh(max(0,n-1))
+
+    def remove_route(self):
+        idx=self.index(); sel=self.routes.curselection()
+        if sel:
+            del self.project['regions'][idx]['routes'][sel[0]]
+            self.changed(); self.refresh(idx)
+
+    def configure(self):
+        def accept(v):
+            path=app_data(); path.mkdir(parents=True,exist_ok=True)
+            (path/'studio.json').write_text(json.dumps(v,ensure_ascii=False),encoding='utf-8')
+            self.settings=v
+        dlg,area,v=self.form('制包设置',[(k,l,self.settings[k],mode) for k,l,mode in [
+            ('sdk','Garmin SDK 目录','dir'),('java','Java 17 程序','file'),('key','签名文件 .der','file'),('cache','底图缓存目录','dir')]],accept)
+        def keygen():
+            target=filedialog.asksaveasfilename(parent=dlg,defaultextension='.der',initialfile='developer_key.der')
+            if not target: return
+            try:
+                if Path(target).exists(): raise ValueError('请选择新的文件名，已有签名不会覆盖')
+                run_tool([v['java'].get(),ROOT/'tools/SigningKey.java',target],Path(target).parent,lambda msg:None)
+                v['key'].set(target)
+            except Exception as e: messagebox.showerror('生成签名失败',str(e),parent=dlg)
+        ttk.Button(area,text='创建新签名…',command=keygen).grid(column=0,row=4,sticky='w')
+
+    def job(self,title,fn):
+        self.busy=True; self.status.config(text=title)
+        def worker():
+            try: self.events.put(('ok',fn()))
+            except Exception as exc: self.events.put(('error',str(exc)))
+        threading.Thread(target=worker,daemon=True).start()
+
+    def fetch_preview(self):
+        r=copy.deepcopy(self.project['regions'][self.index()])
+        cache=self.settings['cache']
+        self.job('正在载入预览底图',lambda:(preview_image(r,cache,(480,320),True),'预览底图已缓存')[1])
+
+    def start_build(self):
+        obj=copy.deepcopy(self.project)
+        prepare(obj,Path.cwd())
+        v=self.settings.copy()
+        if not (Path(v['sdk'])/'bin/monkeybrains.jar').is_file() or not Path(v['key']).is_file() or not (Path(v['java']).is_file() or shutil.which(v['java'])):
+            messagebox.showinfo('首次制包设置','请选择 Garmin SDK、Java 17 和签名文件。签名也可以在设置里创建。')
+            self.configure(); return
+        output=filedialog.asksaveasfilename(initialfile='FR255-离线地图.zip',defaultextension='.zip')
+        if output:
+            def task():
+                meta=build(obj,Path.cwd(),output,v['sdk'],v['java'],v['key'],v['cache'],lambda s:self.events.put(('log',s)))
+                return f"已生成 {output}（{meta['bytes']:,} 字节）"
+            self.job('正在生成安装包',task)
+
+    def poll(self):
+        try:
+            while True:
+                kind,value=self.events.get_nowait()
+                if kind=='log':
+                    self.log.config(state='normal'); self.log.insert('end',value+'\n'); self.log.see('end'); self.log.config(state='disabled')
+                else:
+                    self.busy=False; self.status.config(text=value if kind=='ok' else '操作未完成')
+                    if kind=='error': messagebox.showerror('操作未完成',value,parent=self.root)
+                    else: self.guard(self.refresh_detail)
+        except queue.Empty: pass
+        self.root.after(120,self.poll)
+
+
+def main():
+    if len(sys.argv)>1 and sys.argv[1]=='--build':
+        from atlas import main as cli
+        del sys.argv[1]
+        cli(); return
+    root=tk.Tk()
+    Studio(root); root.mainloop()
+
+
+if __name__=='__main__':
+    main()

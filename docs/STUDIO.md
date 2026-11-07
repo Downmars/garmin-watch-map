@@ -1,0 +1,34 @@
+# 离线地图制包器 · Windows x64
+
+打开 FR255-Atlas-Studio.exe。示例项目含渭南主城区、西安钟楼和三条合成演示路线。
+
+1. 点「添加」输入地区名称、WGS84 中心和边长。已有 GPX 时，点「从 GPX 建立地区」，软件会根据路线估算范围。点「载入预览底图」可在联网时查看覆盖区域。
+2. 选中左侧地区，点「导入 GPX」加入一条或多条路线。也可以点「手绘路线」，依次点选转弯位置，保存为 GPX 并加入该地区。手绘相邻点以直线相连。
+3. 点「保存项目」，得到项目 JSON 和同目录的路线文件夹。把两者一起发送给其他制包者，就能继续编辑。
+4. 点「生成手表安装包」并选择 ZIP 保存位置。把 ZIP 发给使用 FR255 的人；接收者解压，把其中的 weinan-fr255.prg 放到 GARMIN/Apps。地图菜单中选择「地图地区」或「GPX 路线」。
+
+第一次制包，在「制包设置」选择 [Garmin Connect IQ SDK](https://developer.garmin.com/connect-iq/sdk/) 的目录和 Java 17 JDK 的 java.exe。用 SDK Manager 安装普通 Forerunner 255 设备配置。选择自己已有的 .der 签名，或点击「创建新签名」。保存私钥备份，以后更新自己的包时继续使用。Windows EXE 随附 Python、Pillow、界面和手表应用模板。Garmin SDK、设备配置和 JDK 由制包者一次性安装。只接收 PRG 的人只需要手表和 USB 数据线。
+
+首轮下载需要网络，底图按地区缓存。框选范围为正方形，使用 WGS84 经纬度；非 WGS84 路线应先转换。项目可以包含 1–8 个地区、每个地区最多 16 条路线。制包器检查 GPX 是否越界，将路线简化到最多 192 个点，保留分段和端点，过于复杂时会提示拆分。FR255 候选包限制为 180 张合成底图和 15 MB PRG，防止误选过大范围。每个项目生成一个安装包，包内切换即时生效。加入新地区和路线后，再生成一次并同名覆盖。
+
+路线蓝线用于查看预设路径，深红色轨迹记录实际移动。选中地区时进入浏览，选择路线时地图移到起点，BACK 回中。此次范围为导入、手绘和离线切换；剩余距离与偏航提醒属于后续导航功能。
+
+## 从源码运行
+
+安装 Python 3.11+（带 tkinter）、Pillow。在仓库目录执行：
+
+```powershell
+python -m pip install Pillow
+python tools/atlas_studio.py
+```
+
+生成桌面 EXE：
+
+```powershell
+python -m pip install pyinstaller==6.16.0
+python tools/freeze_studio.py
+```
+
+自动化制包可以用 `python tools/atlas.py examples/atlas.json --check` 检查项目，再指定 `--sdk`、`--java`、`--key`、`--output`。项目使用稳定的地区/路线 id 和相对 GPX 路径，格式见 examples/atlas.json。底图生成、GPX 解析和桌面界面分别使用同一套制包逻辑。底图和编译在临时目录完成，校验全部通过后才替换输出 ZIP。个人 GPX 会成为计划路线的一部分，只把成品分享给预期的接收者。
+
+底图、数据许可与手表安装步骤见 [安装说明](INSTALL-V05.md)。

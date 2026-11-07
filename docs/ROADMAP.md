@@ -1,6 +1,8 @@
 # FR255 离线地图迭代计划
 
-更新：2026-11-06。目标机型：普通 Forerunner 255。Fork：<https://github.com/Downmars/garmin-watch-map>。
+更新：2026-11-07。目标机型：普通 Forerunner 255。Fork：<https://github.com/Downmars/garmin-watch-map>。
+
+当前优先交付 v0.5 桌面制包器。v0.5.0-alpha.1 可编辑地区、导入和手绘 GPX，并生成在手表上切换地区/路线的安装包。v0.4 的最近轨迹概览延后。下一阶段再验证导航进度和偏航提醒。见 [制包器使用说明](STUDIO.md)。
 
 ## 目标与边界
 

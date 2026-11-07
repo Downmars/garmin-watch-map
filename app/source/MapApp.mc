@@ -64,6 +64,8 @@ class MapView extends WatchUi.View {
     var savedElapsedSeconds = -1;
     var notice = null;
     var menuOpen = false;
+    var menuTitle = "地图菜单";
+    var atlas;
     var menuRows = [];
     var menuIndex = 0;
     var confirmDiscard = false;
@@ -95,10 +97,14 @@ class MapView extends WatchUi.View {
             W = ds.screenWidth;
             H = ds.screenHeight;
         }
-        // Center comes from the generated MapData.mc (set by build-weinan.ps1),
-        // so switching city needs no edit in this file.
-        centerGX = lonToGX(MapData.CENTER_LON);
-        centerGY = latToGY(MapData.CENTER_LAT);
+        atlas = new OfflineAtlas();
+        atlas.restoreChoice();
+        centerGX = lonToGX(atlas.region[3]);
+        centerGY = latToGY(atlas.region[2]);
+        if (atlas.restoredSelection) {
+            browse.pan();
+            if (atlas.points != null) { centerGX = atlas.points[0]; centerGY = atlas.points[1]; }
+        }
         tiles = new MapTileCache();
         queueMapTiles();
     }
@@ -261,10 +267,11 @@ class MapView extends WatchUi.View {
     function clampCenter() {
         var halfW = W / 2;
         var halfH = H / 2;
-        var minX = MapData.ORIGIN_X + halfW;
-        var maxX = MapData.ORIGIN_X + MapData.COLS * MapData.TILE - halfW;
-        var minY = MapData.ORIGIN_Y + halfH;
-        var maxY = MapData.ORIGIN_Y + MapData.ROWS * MapData.TILE - halfH;
+        var base = atlas.region[4][0];
+        var minX = base[2] + halfW;
+        var maxX = base[2] + base[4] * MapData.TILE - halfW;
+        var minY = base[3] + halfH;
+        var maxY = base[3] + base[5] * MapData.TILE - halfH;
         if (centerGX < minX) { centerGX = minX; }
         if (centerGX > maxX) { centerGX = maxX; }
         if (centerGY < minY) { centerGY = minY; }
@@ -312,17 +319,18 @@ class MapView extends WatchUi.View {
     function onBack() {
         if (recovering) { WatchUi.popView(WatchUi.SLIDE_IMMEDIATE); return true; }
         if (menuOpen) {
+            if (!menuTitle.equals("地图菜单")) { openMenu(); return true; }
             menuOpen = false; confirmDiscard = false; WatchUi.requestUpdate(); return true;
         }
         if (!browse.backToFollow()) { openMenu(); return true; }
-        centerGX = lonToGX((loc == null) ? MapData.CENTER_LON : fix.longitude);
-        centerGY = latToGY((loc == null) ? MapData.CENTER_LAT : fix.latitude);
+        centerGX = lonToGX((loc == null) ? atlas.region[3] : fix.longitude);
+        centerGY = latToGY((loc == null) ? atlas.region[2] : fix.latitude);
         clampCenter(); queueMapTiles();
         WatchUi.requestUpdate();
         return true;
     }
 
-    function mapScale() { return MapLayers.ALL[levelIndex][1]; }
+    function mapScale() { return atlas.region[4][levelIndex][1]; }
 
     function followPosition(lat, lon) {
         if (!browse.following) { return; }
@@ -332,14 +340,14 @@ class MapView extends WatchUi.View {
 
     function zoomTo(next) {
         if (next < 0) { next = 0; }
-        if (next >= MapLayers.ALL.size()) { next = MapLayers.ALL.size() - 1; }
+        if (next >= atlas.region[4].size()) { next = atlas.region[4].size() - 1; }
         if (next != levelIndex) { levelIndex = next; queueMapTiles(); }
         WatchUi.requestUpdate();
     }
 
     function queueMapTiles() {
         var scale = mapScale();
-        tiles.prepare(levelIndex, MapLayers.ALL[levelIndex], centerGX * scale - W / 2.0,
+        tiles.prepare(levelIndex, atlas.region[4][levelIndex], centerGX * scale - W / 2.0,
             centerGY * scale - H / 2.0, W, H);
         scaleBar = MapTiles.scaleBar(centerGY, scale);
         if (active && !recovering && tiles.pending() && tileTimer == null) {
@@ -457,8 +465,9 @@ class MapView extends WatchUi.View {
 
     function openMenu() {
         if (recovering) { return; }
+        menuTitle = "地图菜单";
         menuOpen = true; menuIndex = 0; confirmDiscard = false;
-        menuRows = [["返回地图", "back"]];
+        menuRows = [["返回地图", "back"], ["地图地区", "regions"], ["GPX 路线", "routes"]];
         if (recorder.hasSession()) {
             menuRows.add([recorder.state == recorder.RUNNING ? "暂停运动" : "继续运动", "toggle"]);
             menuRows.add(["保存运动", "save"]);
@@ -472,10 +481,51 @@ class MapView extends WatchUi.View {
         WatchUi.requestUpdate();
     }
 
+    function showLibrary(regions) {
+        menuTitle = regions ? "地图地区" : "GPX 路线";
+        menuIndex = 0;
+        menuRows = [];
+        if (regions) {
+            for (var i = 0; i < MapCatalog.REGIONS.size(); i++) {
+                menuRows.add([MapCatalog.REGIONS[i][1], "region", i]);
+                if (atlas.region[0].equals(MapCatalog.REGIONS[i][0])) { menuIndex = i; }
+            }
+        } else {
+            menuRows.add(["隐藏计划路线", "route", -1]);
+            for (var j = 0; j < atlas.region[5].size(); j++) {
+                menuRows.add([atlas.region[5][j][1], "route", j]);
+            }
+            menuIndex = atlas.routeIndex + 1;
+        }
+    }
+
+    function selectLibraryItem(isRegion) {
+        var index = menuRows[menuIndex][2];
+        if (isRegion) {
+            atlas.chooseRegion(index);
+            tiles = new MapTileCache();
+            centerGX = lonToGX(atlas.region[3]);
+            centerGY = latToGY(atlas.region[2]);
+            browse.pan();
+        } else {
+            if (!atlas.chooseRoute(index)) { notice = "路线读取失败"; return; }
+            if (atlas.points != null) {
+                centerGX = atlas.points[0]; centerGY = atlas.points[1];
+                browse.pan();
+            }
+        }
+        menuOpen = false;
+        notice = atlas.remember() ? null : "本次已切换，未记住选择";
+        clampCenter();
+        queueMapTiles();
+    }
+
     function performAction(action) {
         if (recovering) { return; }
         if (action.equals("discard_yes") && !confirmDiscard) { return; }
         if (action.equals("back")) { menuOpen = false; confirmDiscard = false; }
+        else if (action.equals("regions") || action.equals("routes")) { showLibrary(action.equals("regions")); }
+        else if (action.equals("region") || action.equals("route")) { selectLibraryItem(action.equals("region")); }
         else if (action.equals("discard")) {
             confirmDiscard = true; menuIndex = 0;
             menuRows = [["取消丢弃", "cancel"], ["确认丢弃运动", "discard_yes"]];
@@ -507,7 +557,7 @@ class MapView extends WatchUi.View {
 
     function drawMenu(dc) {
         dc.setColor(Graphics.COLOR_BLACK, Graphics.COLOR_WHITE); dc.clear();
-        dc.drawText(W / 2, 18, Graphics.FONT_XTINY, confirmDiscard ? "丢弃后无法恢复" : "运动记录", Graphics.TEXT_JUSTIFY_CENTER);
+        dc.drawText(W / 2, 18, Graphics.FONT_XTINY, confirmDiscard ? "丢弃后无法恢复" : menuTitle, Graphics.TEXT_JUSTIFY_CENTER);
         dc.drawText(W / 2, 38, Graphics.FONT_XTINY, recorder.label() + " " + elapsedText(), Graphics.TEXT_JUSTIFY_CENTER);
         var first = menuIndex > 3 ? menuIndex - 3 : 0;
         for (var n = first; n < menuRows.size() && n < first + 5; n++) {
@@ -526,8 +576,9 @@ class MapView extends WatchUi.View {
         if (loc == null) { return false; }
         var gx = lonToGX(fix.longitude);
         var gy = latToGY(fix.latitude);
-        return gx < MapData.ORIGIN_X || gx >= MapData.ORIGIN_X + MapData.COLS * MapData.TILE ||
-            gy < MapData.ORIGIN_Y || gy >= MapData.ORIGIN_Y + MapData.ROWS * MapData.TILE;
+        var base = atlas.region[4][0];
+        return gx < base[2] || gx >= base[2] + base[4]*MapData.TILE ||
+            gy < base[3] || gy >= base[3] + base[5]*MapData.TILE;
     }
 
     function statusText() {
@@ -603,15 +654,17 @@ class MapView extends WatchUi.View {
         dc.setColor(Graphics.COLOR_LT_GRAY, Graphics.COLOR_LT_GRAY);
         dc.clear();
 
-        var clipX = (MapData.ORIGIN_X - left) * scale;
-        var clipY = (MapData.ORIGIN_Y - top) * scale;
-        var clipRight = clipX + MapData.COLS * 512 * scale;
-        var clipBottom = clipY + MapData.ROWS * 512 * scale;
+        var base = atlas.region[4][0];
+        var clipX = (base[2] - left) * scale;
+        var clipY = (base[3] - top) * scale;
+        var clipRight = clipX + base[4] * 512 * scale;
+        var clipBottom = clipY + base[5] * 512 * scale;
         if (clipX < 0) { clipX = 0; } if (clipY < 0) { clipY = 0; }
         if (clipRight > W) { clipRight = W; } if (clipBottom > H) { clipBottom = H; }
         dc.setClip(clipX, clipY, clipRight - clipX, clipBottom - clipY);
         tiles.draw(dc, left * scale, top * scale);
         dc.clearClip();
+        atlas.draw(dc, left, top, scale, W, H);
         TrackRenderer.drawScaled(dc, track, left, top, W, H, scale);
 
         if (loc != null) {
@@ -645,7 +698,7 @@ class MapView extends WatchUi.View {
 
         // 地图来源署名保持可见。
         dc.setColor(Graphics.COLOR_BLACK, Graphics.COLOR_TRANSPARENT);
-        dc.drawText(W / 2, 44, Graphics.FONT_XTINY, "(c) OSM contributors", Graphics.TEXT_JUSTIFY_CENTER);
+        dc.drawText(W / 2, 44, Graphics.FONT_XTINY, "©OSM · OSM France", Graphics.TEXT_JUSTIFY_CENTER);
         if (tiles.pending() || tiles.error) {
             dc.setColor(Graphics.COLOR_BLACK, Graphics.COLOR_WHITE);
             dc.drawText(W / 2, 65, Graphics.FONT_XTINY, tiles.error ? "底图暂不可用" : "载入底图", Graphics.TEXT_JUSTIFY_CENTER);
