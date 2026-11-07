@@ -29,6 +29,6 @@ python -m pip install pyinstaller==6.16.0
 python tools/freeze_studio.py
 ```
 
-自动化制包可以用 `python tools/atlas.py examples/atlas.json --check` 检查项目，再指定 `--sdk`、`--java`、`--key`、`--output`。项目使用稳定的地区/路线 id 和相对 GPX 路径，格式见 examples/atlas.json。底图生成、GPX 解析和桌面界面分别使用同一套制包逻辑。底图和编译在临时目录完成，校验全部通过后才替换输出 ZIP。个人 GPX 会成为计划路线的一部分，只把成品分享给预期的接收者。
+自动化制包可以用 `python -X utf8 tools/atlas.py examples/atlas.json --check` 检查项目，再指定 `--sdk`、`--java`、`--key`、`--output`。UTF-8 模式可在英文版 Windows 重定向日志时正确输出中文地区名。项目使用稳定的地区/路线 id 和相对 GPX 路径，格式见 examples/atlas.json。底图生成、GPX 解析和桌面界面分别使用同一套制包逻辑。底图和编译在临时目录完成，校验全部通过后才替换输出 ZIP。个人 GPX 会成为计划路线的一部分，只把成品分享给预期的接收者。
 
 底图、数据许可与手表安装步骤见 [安装说明](INSTALL-V05.md)。
