@@ -10,7 +10,7 @@ args.add_argument('--out',type=Path,default=root/'dist')
 args.add_argument('--work',type=Path,default=root/'temp/studio-freeze')
 options = args.parse_args()
 options.work.mkdir(parents=True,exist_ok=True)
-files = ['app/manifest.xml','app/monkey.jungle','app/resources/drawables/launcher.png',
+files = ['app/manifest.xml','app/monkey.jungle','app/resources/drawables/launcher.png','app/online/PhoneTileTransport.mc',
          'docs/INSTALL-V05.md','LICENSE','tools/SigningKey.java',
          'examples/atlas.json','examples/routes/weinan-demo.gpx','examples/routes/weinan-segments.gpx','examples/routes/xian-demo.gpx']
 files += [str(p.relative_to(root)) for p in sorted((root/'app/source').glob('*.mc'))

@@ -16,7 +16,7 @@ from tkinter import filedialog, messagebox, ttk
 import uuid
 
 from PIL import Image, ImageDraw, ImageTk
-from atlas import ROOT, VERSION, build, prepare, run_tool, validate_label
+from atlas import ROOT, VERSION, build, online_config, prepare, run_tool, validate_label
 from gpx_route import read_gpx
 from make_city_pack import fetch_tile, lon_to_x, lat_to_y
 from make_multilevel_pack import layer_grids
@@ -169,7 +169,7 @@ class Studio:
         shell.pack(fill='both',expand=True)
         bar=ttk.Frame(shell); bar.pack(fill='x',pady=(0,12))
         ttk.Label(bar,text='离线地图制包器',style='Title.TLabel').pack(side='left')
-        for label,fn in [('制包设置',self.configure),('保存项目',self.save),('打开项目',self.open),('新项目',self.new)]:
+        for label,fn in [('制包设置',self.configure),('在线底图',self.edit_online),('保存项目',self.save),('打开项目',self.open),('新项目',self.new)]:
             ttk.Button(bar,text=label,command=lambda f=fn:self.guard(f)).pack(side='right',padx=2)
         middle=ttk.Frame(shell); middle.pack(fill='both',expand=True)
         left=ttk.Frame(middle); left.pack(side='left',fill='y',padx=(0,14))
@@ -384,6 +384,18 @@ class Studio:
         if sel:
             del self.project['regions'][idx]['routes'][sel[0]]
             self.changed(); self.refresh(idx)
+
+    def edit_online(self):
+        current=self.project.get('online') or {}
+        def accept(values):
+            if values['url']:
+                self.project['online']=online_config({'online':values})
+            else:
+                self.project.pop('online',None)
+            self.changed()
+        self.form('在线底图 · 256px WGS84 XYZ',[
+            ('url','HTTPS 瓦片地址（留空仅离线）',current.get('url',''),None),
+            ('credit','图源署名',current.get('credit',''),None)],accept)
 
     def configure(self):
         def accept(v):

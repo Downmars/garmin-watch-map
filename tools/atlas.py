@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import urllib.request
+from urllib.parse import urlsplit
 import xml.etree.ElementTree as ET
 import zipfile
 
@@ -18,7 +19,7 @@ from gpx_route import read_gpx, simplify
 from make_multilevel_pack import generate, layer_grids
 
 ROOT = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parents[1]))
-VERSION = '0.5.0-alpha.2'
+VERSION = '0.6.0-alpha.1'
 MAX_IMAGES = 180
 MAX_BYTES = 15_000_000
 
@@ -32,7 +33,45 @@ def validate_label(item):
         raise ValueError("项目标识需以字母开头，使用小写字母、数字或下划线")
 
 
+def online_config(project):
+    config = project.get('online')
+    if config is None:
+        return None
+    if not isinstance(config, dict):
+        raise ValueError('在线底图设置无效')
+    url, credit = config.get('url'), config.get('credit')
+    if not isinstance(url,str) or not url.isascii() or len(url)>512 or any(ord(c)<=32 or ord(c)>126 or c in '"\\' for c in url):
+        raise ValueError('请输入有效 HTTPS 瓦片模板')
+    parts=urlsplit(url)
+    if parts.scheme!='https' or not parts.hostname or parts.username is not None or parts.password is not None or parts.fragment or '{' in parts.netloc:
+        raise ValueError('在线底图需使用 HTTPS 地址，不能含账号密码或片段')
+    if sorted(re.findall(r'\{[^{}]*\}',url))!=['{x}','{y}','{z}'] or any(c in re.sub(r'\{[xyz]\}','',url) for c in '{}'):
+        raise ValueError('瓦片模板必须各含一个 {z}、{x} 和 {y}')
+    if not isinstance(credit,str) or not credit.strip() or len(credit)>24 or not credit.isprintable():
+        raise ValueError('请输入 1–24 个字符的图源署名，用于手表显示')
+    return dict(url=url, credit=credit.strip())
+
+
+def configure_network(app, config):
+    if config is None:
+        return
+    # Compose literals and numeric coordinates separately; no user input is code.
+    parts=re.split(r'(\{[zxy]\})',config['url'])
+    expr=' + '.join(p[1]+'.toString()' if p in ('{x}','{y}','{z}') else json.dumps(p) for p in parts if p)
+    src=('module OnlineSource {\n    const ENABLED = true;\n    const CREDIT = '
+         +json.dumps(config['credit'],ensure_ascii=False)+';\n    function url(z,x,y) { return '+expr+'; }\n}\n')
+    (app/'source/OnlineSource.mc').write_text(src,encoding='utf-8')
+    shutil.copyfile(ROOT/'app/online/PhoneTileTransport.mc',app/'source/PhoneTileTransport.mc')
+    namespace='http://www.garmin.com/xml/connectiq'
+    ET.register_namespace('iq',namespace)
+    tree=ET.parse(app/'manifest.xml')
+    perms=tree.find('.//{'+namespace+'}permissions')
+    ET.SubElement(perms,'{'+namespace+'}uses-permission',id='Communications')
+    tree.write(app/'manifest.xml',encoding='utf-8',xml_declaration=True)
+
+
 def prepare(project, folder):
+    online_config(project)
     if project.get('version') != 1:
         raise ValueError("不支持的项目版本")
     regions = project.get('regions')
@@ -203,6 +242,8 @@ def build(project, folder, output, sdk, java, key, cache, progress=print, test=F
         scratch = Path(private)
         app = scratch/'app'
         create_app(app,scratch,Path(cache).resolve(),plan,progress)
+        online=online_config(project)
+        configure_network(app,online)
         prg = scratch/'weinan-fr255.prg'  # Same filename as earlier sideloads.
         args = [java,'-Xmx2g','-Dfile.encoding=UTF-8','-jar',jar,'-f','monkey.jungle',
                 '--override-devices-json',profile,'-d','fr255','-y',key,'-o',prg]
@@ -218,6 +259,7 @@ def build(project, folder, output, sdk, java, key, cache, progress=print, test=F
         meta = dict(version=VERSION, device='fr255', bytes=prg.stat().st_size,
                     sha256=hashlib.sha256(prg.read_bytes()).hexdigest(),
                     coordinate_system='WGS84', source='OpenStreetMap France HOT',
+                    online_source=online['credit'] if online else None,
                     regions=[dict(name=r['name'], id=r['id'], center=[r['lat'],r['lon']], km=r['km'],
                                   routes=[dict(name=t['name'], points=sum(v is not None for v in pts)//2) for t,pts in routes]) for r,_,routes in plan])
         archive = scratch/'install.zip'

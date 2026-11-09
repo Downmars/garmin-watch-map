@@ -81,6 +81,8 @@ class MapView extends WatchUi.View {
     var currentSpeed = 0.0;
     var levelIndex = 0;
     var tiles;
+    var phoneTiles = null;
+    var offlineRegion;
     var tileTimer = null;
     var active = false;
     var scaleBar;
@@ -106,6 +108,7 @@ class MapView extends WatchUi.View {
             if (atlas.points != null) { centerGX = atlas.points[0]; centerGY = atlas.points[1]; }
         }
         tiles = new MapTileCache();
+        if (OnlineSource.ENABLED) { phoneTiles = new PhoneTiles(); }
         queueMapTiles();
     }
 
@@ -139,6 +142,7 @@ class MapView extends WatchUi.View {
 
     function onHide() {
         active = false;
+        if (phoneTiles != null) { phoneTiles.stop(); }
         if (tileTimer != null) { tileTimer.stop(); tileTimer = null; }
         if (recoveryTimer != null) { recoveryTimer.stop(); recoveryTimer = null; }
         if (headingTimer != null) {
@@ -150,6 +154,7 @@ class MapView extends WatchUi.View {
 
     function onHeadingTick() as Void {
         if (recovering) { return; }
+        if (phoneTiles != null && active && !menuOpen) { phoneTiles.tick(); }
         var nextStatus = fix.status(System.getTimer());
         var needsUpdate = nextStatus != lastUiStatus || recorder.state == recorder.RUNNING;
         lastUiStatus = nextStatus;
@@ -265,6 +270,12 @@ class MapView extends WatchUi.View {
     }
 
     function clampCenter() {
+        if (phoneTiles != null) {
+            var dx = W/(2.0*mapScale()), dy = H/(2.0*mapScale());
+            if (centerGX<dx) { centerGX=dx; } if (centerGX>MapData.WORLD-dx) { centerGX=MapData.WORLD-dx; }
+            if (centerGY<dy) { centerGY=dy; } if (centerGY>MapData.WORLD-dy) { centerGY=MapData.WORLD-dy; }
+            return;
+        }
         var halfW = W / 2;
         var halfH = H / 2;
         var base = atlas.region[4][0];
@@ -347,8 +358,16 @@ class MapView extends WatchUi.View {
 
     function queueMapTiles() {
         var scale = mapScale();
-        tiles.prepare(levelIndex, atlas.region[4][levelIndex], centerGX * scale - W / 2.0,
-            centerGY * scale - H / 2.0, W, H);
+        offlineRegion = atlas.region;
+        if (phoneTiles != null && !covers(offlineRegion,centerGX,centerGY)) {
+            for (var i=0;i<MapCatalog.REGIONS.size();i++) {
+                if (covers(MapCatalog.REGIONS[i],centerGX,centerGY)) { offlineRegion=MapCatalog.REGIONS[i]; break; }
+            }
+        }
+        var layer = offlineRegion[4][levelIndex];
+        var px = centerGX*scale-W/2.0, py = centerGY*scale-H/2.0;
+        tiles.prepare(layer[6][0],layer,px,py,W,H);
+        if (phoneTiles!=null) { phoneTiles.prepare(layer[0],px,py,W,H); }
         scaleBar = MapTiles.scaleBar(centerGY, scale);
         if (active && !recovering && tiles.pending() && tileTimer == null) {
             tileTimer = new Timer.Timer(); tileTimer.start(method(:onTileTick), 50, true);
@@ -576,9 +595,13 @@ class MapView extends WatchUi.View {
         if (loc == null) { return false; }
         var gx = lonToGX(fix.longitude);
         var gy = latToGY(fix.latitude);
-        var base = atlas.region[4][0];
-        return gx < base[2] || gx >= base[2] + base[4]*MapData.TILE ||
-            gy < base[3] || gy >= base[3] + base[5]*MapData.TILE;
+        return !covers(offlineRegion,gx,gy);
+    }
+
+    function covers(region,x,y) {
+        var base=region[4][0];
+        return x>=base[2] && x<base[2]+base[4]*MapData.TILE &&
+            y>=base[3] && y<base[3]+base[5]*MapData.TILE;
     }
 
     function statusText() {
@@ -586,7 +609,7 @@ class MapView extends WatchUi.View {
         if (s == fix.WAITING) { return "等待定位"; }
         if (s == fix.WEAK) { return "GPS 信号弱"; }
         if (s == fix.STALE) { return "定位已过期"; }
-        if (outsideMap()) { return "超出地图范围"; }
+        if (phoneTiles == null && outsideMap()) { return "超出地图范围"; }
         return "GPS 正常";
     }
 
@@ -654,16 +677,19 @@ class MapView extends WatchUi.View {
         dc.setColor(Graphics.COLOR_LT_GRAY, Graphics.COLOR_LT_GRAY);
         dc.clear();
 
-        var base = atlas.region[4][0];
+        var base = offlineRegion[4][0];
         var clipX = (base[2] - left) * scale;
         var clipY = (base[3] - top) * scale;
         var clipRight = clipX + base[4] * 512 * scale;
         var clipBottom = clipY + base[5] * 512 * scale;
         if (clipX < 0) { clipX = 0; } if (clipY < 0) { clipY = 0; }
         if (clipRight > W) { clipRight = W; } if (clipBottom > H) { clipBottom = H; }
-        dc.setClip(clipX, clipY, clipRight - clipX, clipBottom - clipY);
-        tiles.draw(dc, left * scale, top * scale);
-        dc.clearClip();
+        if (clipRight>clipX && clipBottom>clipY) {
+            dc.setClip(clipX, clipY, clipRight - clipX, clipBottom - clipY);
+            tiles.draw(dc, left * scale, top * scale);
+            dc.clearClip();
+        }
+        if (phoneTiles!=null) { phoneTiles.draw(dc,left*scale,top*scale); }
         atlas.draw(dc, left, top, scale, W, H);
         TrackRenderer.drawScaled(dc, track, left, top, W, H, scale);
 
@@ -699,7 +725,11 @@ class MapView extends WatchUi.View {
         // 地图来源署名保持可见。
         dc.setColor(Graphics.COLOR_BLACK, Graphics.COLOR_TRANSPARENT);
         dc.drawText(W / 2, 44, Graphics.FONT_XTINY, "©OSM · OSM France", Graphics.TEXT_JUSTIFY_CENTER);
-        if (tiles.pending() || tiles.error) {
+        if (phoneTiles!=null) {
+            var sourceText=phoneTiles.ready.size()>0 ? "在线 "+OnlineSource.CREDIT :
+                (covers(offlineRegion,centerGX,centerGY) ? "离线" : "无离线覆盖");
+            dc.drawText(W/2,62,Graphics.FONT_XTINY,sourceText,Graphics.TEXT_JUSTIFY_CENTER);
+        } else if (tiles.pending() || tiles.error) {
             dc.setColor(Graphics.COLOR_BLACK, Graphics.COLOR_WHITE);
             dc.drawText(W / 2, 65, Graphics.FONT_XTINY, tiles.error ? "底图暂不可用" : "载入底图", Graphics.TEXT_JUSTIFY_CENTER);
         }

@@ -4,7 +4,7 @@
 
 **先看 [迭代计划](docs/ROADMAP.md)、[设备与方案调研](docs/RESEARCH.md)、[验证标准](docs/VALIDATION.md)、[版本记录](CHANGELOG.md)。**
 
-当前候选版 **v0.5.0-alpha.2** 提供 Windows 桌面制包器。选地区、导入 GPX 或在预览地图上手绘路线，生成可分享的 FR255 安装 ZIP。制包器在生成底图前检查 FR255 设备配置。手表菜单可以离线切换包里的地区和路线。见 [制包器说明](docs/STUDIO.md) 和 [手表操作](docs/INSTALL-V05.md)。普通安装者只需复制 PRG，制包者首次配置 Garmin SDK、Java 和签名。
+当前候选版 **v0.6.0-alpha.1** 提供 Windows 桌面制包器，可选地区、导入或手绘 GPX 并生成 FR255 安装 ZIP。项目可选填已获授权的 HTTPS XYZ 在线图源。手表先显示已打包的底图，通过手机取到在线图片后更新，失联或请求失败时使用本地底图。未配置在线地址的项目保持纯离线。见 [制包器说明](docs/STUDIO.md) 和 [手表操作](docs/INSTALL-V05.md)。
 
 v0.4.0-alpha.1 已交付街道/概览双级地图、比例尺及缩放按键模式。见 [v0.4 验证报告](docs/verification-v0.4-alpha.1.md)。
 
@@ -29,7 +29,7 @@ FR255 不支持原生 `WatchUi.MapView`，使用预生成图像底图。FR955/96
 ## 安装与操作
 
 1. 将为 **fr255** 编译的 `.prg` 复制到手表 `Internal Storage/GARMIN/Apps`；传输完成后断开 USB。
-2. 从手表应用列表打开「渭南地图」，室外等待有效定位。
+2. 从手表应用列表打开「离线地图」（旧包名称为「渭南地图」），室外等待有效定位。
 3. START 循环切换“上下 → 左右 → 缩放”。上下/左右模式中 UP/DOWN 平移；缩放模式中 UP 放大到街道、DOWN 缩小到概览。BACK 从浏览回中，在跟随模式打开运动菜单。菜单中 UP/DOWN 选择、START 确认、BACK 返回地图。
 
 文件夹卡顿或显示空白时，先排查 MTP 连接、USB 线和其他 Garmin 程序占用，不通过随意新建系统目录解决。详见 [渭南说明](WEINAN.md)。
@@ -62,6 +62,8 @@ GitHub CI 运行不联网的 Python 测试、语法/XML 和提交内容检查。
 - `main`：v0.2 功能验收基线与计划；长时间内存/续航测试仍待完成。
 - `iteration/v0.3-recording`：运动记录与恢复候选版；实机验收前为 alpha。
 - `iteration/v0.4-browsing`：基于 v0.3 分支的双级缩放候选版，单独审查新改动。
+- `iteration/v0.5-packs`：桌面制包器、地区及 GPX 切换。
+- `iteration/v0.6-hybrid`：可选在线底图与离线回退，见 [验证记录](docs/verification-v0.6-alpha.1.md)。
 - 迭代在自己的 fork 内审查，不自动向上游提 PR。
 - 只提交源码、测试与文档；排除私钥、SDK、生成底图、个人 GPX/FIT 和本地日志。
 
