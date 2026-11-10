@@ -19,7 +19,7 @@ from gpx_route import read_gpx, simplify
 from make_multilevel_pack import generate, layer_grids
 
 ROOT = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parents[1]))
-VERSION = '0.6.0-alpha.1'
+VERSION = '0.6.0-alpha.3'
 MAX_IMAGES = 180
 MAX_BYTES = 15_000_000
 

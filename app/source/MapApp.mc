@@ -383,8 +383,6 @@ class MapView extends WatchUi.View {
 
     function drawScaleBar(dc) {
         var cx = W - 60; var cy = H / 2;
-        dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_WHITE);
-        dc.fillRectangle(cx - 42, cy - 25, 84, 42);
         dc.setColor(Graphics.COLOR_BLACK, Graphics.COLOR_TRANSPARENT);
         dc.drawText(cx, cy - 23, Graphics.FONT_XTINY, scaleBar[2], Graphics.TEXT_JUSTIFY_CENTER);
         var x = cx - scaleBar[1] / 2;
@@ -708,8 +706,6 @@ class MapView extends WatchUi.View {
             }
         }
 
-        dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_WHITE);
-        dc.fillRectangle(30, 8, W - 60, 33);
         dc.setColor(Graphics.COLOR_BLACK, Graphics.COLOR_TRANSPARENT);
         dc.drawText(W / 2, 8, Graphics.FONT_XTINY, statusText(), Graphics.TEXT_JUSTIFY_CENTER);
         var modeText = (browse.following ? "跟随 " : "浏览 ") +
@@ -730,14 +726,12 @@ class MapView extends WatchUi.View {
                 (covers(offlineRegion,centerGX,centerGY) ? "离线" : "无离线覆盖");
             dc.drawText(W/2,62,Graphics.FONT_XTINY,sourceText,Graphics.TEXT_JUSTIFY_CENTER);
         } else if (tiles.pending() || tiles.error) {
-            dc.setColor(Graphics.COLOR_BLACK, Graphics.COLOR_WHITE);
+            dc.setColor(Graphics.COLOR_BLACK, Graphics.COLOR_TRANSPARENT);
             dc.drawText(W / 2, 65, Graphics.FONT_XTINY, tiles.error ? "底图暂不可用" : "载入底图", Graphics.TEXT_JUSTIFY_CENTER);
         }
 
+        dc.setColor(Graphics.COLOR_BLACK, Graphics.COLOR_TRANSPARENT);
         if (notice != null) {
-            dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_WHITE);
-            dc.fillRectangle(25, H - 90, W - 50, 20);
-            dc.setColor(Graphics.COLOR_BLACK, Graphics.COLOR_TRANSPARENT);
             dc.drawText(W / 2, H - 88, Graphics.FONT_XTINY, notice, Graphics.TEXT_JUSTIFY_CENTER);
         }
         dc.drawText(W / 2, H - 70, Graphics.FONT_XTINY, recorder.label() + " " + elapsedText(), Graphics.TEXT_JUSTIFY_CENTER);

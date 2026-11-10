@@ -4,7 +4,7 @@
 
 **先看 [迭代计划](docs/ROADMAP.md)、[设备与方案调研](docs/RESEARCH.md)、[验证标准](docs/VALIDATION.md)、[版本记录](CHANGELOG.md)。**
 
-当前候选版 **v0.6.0-alpha.1** 提供 Windows 桌面制包器，可选地区、导入或手绘 GPX 并生成 FR255 安装 ZIP。项目可选填已获授权的 HTTPS XYZ 在线图源。手表先显示已打包的底图，通过手机取到在线图片后更新，失联或请求失败时使用本地底图。未配置在线地址的项目保持纯离线。见 [制包器说明](docs/STUDIO.md) 和 [手表操作](docs/INSTALL-V05.md)。
+当前候选版 **v0.6.0-alpha.3** 提供 Windows 桌面制包器，可选地区、导入或手绘 GPX 并生成 FR255 安装 ZIP。项目可选填已获授权的 HTTPS XYZ 在线图源。手表先显示已打包的底图，通过手机取到在线图片后更新，失联或请求失败时使用本地底图。未配置在线地址的项目保持纯离线。地图状态提示和比例尺使用透明背景。见 [制包器说明](docs/STUDIO.md) 和 [手表操作](docs/INSTALL-V05.md)。
 
 v0.4.0-alpha.1 已交付街道/概览双级地图、比例尺及缩放按键模式。见 [v0.4 验证报告](docs/verification-v0.4-alpha.1.md)。
 
