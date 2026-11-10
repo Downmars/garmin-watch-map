@@ -748,7 +748,7 @@ class MapView extends WatchUi.View {
 
         // 地图来源署名保持可见。
         dc.setColor(Graphics.COLOR_BLACK, Graphics.COLOR_TRANSPARENT);
-        dc.drawText(W / 2, 44, Graphics.FONT_XTINY, "©OSM · OSM France", Graphics.TEXT_JUSTIFY_CENTER);
+        dc.drawText(W / 2, 44, Graphics.FONT_XTINY, MapSource.CREDIT, Graphics.TEXT_JUSTIFY_CENTER);
         if (phoneTiles!=null) {
             var sourceText=phoneTiles.ready.size()>0 ? "在线 "+OnlineSource.CREDIT :
                 (covers(offlineRegion,centerGX,centerGY) ? "离线" : "无离线覆盖");

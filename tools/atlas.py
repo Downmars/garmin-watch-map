@@ -11,15 +11,15 @@ import subprocess
 import sys
 import tempfile
 import urllib.request
-from urllib.parse import urlsplit
 import xml.etree.ElementTree as ET
 import zipfile
 
 from gpx_route import read_gpx, simplify
 from make_multilevel_pack import generate, layer_grids
+from map_source import HOT_CREDIT, HOT_ATTRIBUTION, PALETTE, project_source, validate_template
 
 ROOT = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parents[1]))
-VERSION = '0.6.0-alpha.4'
+VERSION = '0.7.0-alpha.1'
 MAX_IMAGES = 180
 MAX_BYTES = 15_000_000
 
@@ -34,22 +34,24 @@ def validate_label(item):
 
 
 def online_config(project):
+    source = project_source(project)
+    if source is not None:
+        return dict(url=source.url, credit=source.credit) if source.online else None
     config = project.get('online')
     if config is None:
         return None
     if not isinstance(config, dict):
         raise ValueError('在线底图设置无效')
-    url, credit = config.get('url'), config.get('credit')
-    if not isinstance(url,str) or not url.isascii() or len(url)>512 or any(ord(c)<=32 or ord(c)>126 or c in '"\\' for c in url):
-        raise ValueError('请输入有效 HTTPS 瓦片模板')
-    parts=urlsplit(url)
-    if parts.scheme!='https' or not parts.hostname or parts.username is not None or parts.password is not None or parts.fragment or '{' in parts.netloc:
-        raise ValueError('在线底图需使用 HTTPS 地址，不能含账号密码或片段')
-    if sorted(re.findall(r'\{[^{}]*\}',url))!=['{x}','{y}','{z}'] or any(c in re.sub(r'\{[xyz]\}','',url) for c in '{}'):
-        raise ValueError('瓦片模板必须各含一个 {z}、{x} 和 {y}')
-    if not isinstance(credit,str) or not credit.strip() or len(credit)>24 or not credit.isprintable():
-        raise ValueError('请输入 1–24 个字符的图源署名，用于手表显示')
-    return dict(url=url, credit=credit.strip())
+    return validate_template(config.get('url'), config.get('credit'))
+
+
+def configure_source(app, source):
+    credit = source.credit if source else HOT_CREDIT
+    colors = ','.join(f'0x{color:06X}' for color in PALETTE)
+    content = ('module MapSource {\n    const CREDIT = '
+               + json.dumps(credit, ensure_ascii=False)
+               + ';\n    var PALETTE = [' + colors + '];\n}\n')
+    (app/'source/MapSource.mc').write_text(content, encoding='utf-8')
 
 
 def configure_network(app, config):
@@ -116,7 +118,7 @@ def prepare(project, folder):
     return summary
 
 
-def create_app(app, scratch, cache, plan, progress):
+def create_app(app, scratch, cache, plan, progress, source=None):
     (app/'source').mkdir(parents=True)
     drawables = app/'resources/drawables'
     drawables.mkdir(parents=True)
@@ -138,7 +140,8 @@ def create_app(app, scratch, cache, plan, progress):
         part = scratch/f'part_{i}'
         tag = f'r{i}_'
         progress(f"制作 {region['name']} 底图")
-        generate(part, scratch/'tiles', cache, region['lat'], region['lon'], region['km'], tag, progress)
+        generate(part, scratch/'tiles', cache, region['lat'], region['lon'], region['km'],
+                 tag, progress, source=source)
         for item in ET.parse(part/'resources/drawables/drawables.xml').getroot():
             if item.get('id') != 'LauncherIcon':
                 name = item.get('filename')
@@ -167,6 +170,30 @@ def create_app(app, scratch, cache, plan, progress):
     if len(route_xml):
         ET.ElementTree(route_xml).write(route_dir/'routes.xml', encoding='utf-8')
     (app/'source/MapCatalog.mc').write_text('module MapCatalog { var REGIONS = ['+',\n'.join(records)+']; }\n', encoding='utf-8')
+    configure_source(app, source)
+
+
+def project_budget(project, folder, cache):
+    plan = prepare(project, folder)
+    source = project_source(project)
+    coordinates = set()
+    images = 0
+    for _, layers, _ in plan:
+        for layer in layers:
+            images += layer['cols'] * layer['rows']
+            for x in range(layer['origin_x']//256, layer['origin_x']//256 + layer['cols']*2):
+                for y in range(layer['origin_y']//256, layer['origin_y']//256 + layer['rows']*2):
+                    coordinates.add((layer['zoom'], x, y))
+    cached = 0
+    for z, x, y in coordinates:
+        path = source.cache_path(cache, z, x, y) if source else Path(cache)/str(z)/str(x)/f'{y}.png'
+        cached += path.is_file()
+    # Uncompressed indexed pixels give a transparent estimate, not a PRG size prediction.
+    return dict(images=images, max_images=MAX_IMAGES, source_tiles=len(coordinates),
+                cached_tiles=cached, download_tiles=len(coordinates)-cached,
+                bitmap_bytes=images*512*512, palette_colors=16 if source else 64,
+                max_prg_bytes=MAX_BYTES, zoom_levels=[13, 15],
+                source=source.metadata() if source else None)
 
 
 def garmin_data_roots():
@@ -228,6 +255,9 @@ def run_tool(args, cwd, progress):
 
 def build(project, folder, output, sdk, java, key, cache, progress=print, test=False, devices=None):
     plan = prepare(project, folder)
+    source = project_source(project)
+    if source is not None:
+        source.require_offline()
     jar = Path(sdk).resolve()/'bin/monkeybrains.jar'
     key = Path(key).resolve()
     java = str(Path(shutil.which(str(java)) or java).resolve())
@@ -241,7 +271,7 @@ def build(project, folder, output, sdk, java, key, cache, progress=print, test=F
     with tempfile.TemporaryDirectory(prefix='atlas-',dir=output.parent) as private:
         scratch = Path(private)
         app = scratch/'app'
-        create_app(app,scratch,Path(cache).resolve(),plan,progress)
+        create_app(app,scratch,Path(cache).resolve(),plan,progress,source=source)
         online=online_config(project)
         configure_network(app,online)
         prg = scratch/'weinan-fr255.prg'  # Same filename as earlier sideloads.
@@ -258,7 +288,10 @@ def build(project, folder, output, sdk, java, key, cache, progress=print, test=F
             raise ValueError("PRG 超过 15 MB 预算，请缩小地区")
         meta = dict(version=VERSION, device='fr255', bytes=prg.stat().st_size,
                     sha256=hashlib.sha256(prg.read_bytes()).hexdigest(),
-                    coordinate_system='WGS84', source='OpenStreetMap France HOT',
+                    coordinate_system='WGS84', source=source.credit if source else 'OpenStreetMap France HOT',
+                    attribution=source.attribution if source else HOT_ATTRIBUTION,
+                    map_source=source.metadata() if source else None,
+                    budget=project_budget(project,folder,cache),
                     online_source=online['credit'] if online else None,
                     regions=[dict(name=r['name'], id=r['id'], center=[r['lat'],r['lon']], km=r['km'],
                                   routes=[dict(name=t['name'], points=sum(v is not None for v in pts)//2) for t,pts in routes]) for r,_,routes in plan])
@@ -268,6 +301,7 @@ def build(project, folder, output, sdk, java, key, cache, progress=print, test=F
             z.writestr('atlas.json',json.dumps(meta,ensure_ascii=False,indent=2))
             z.write(ROOT/'docs/INSTALL-V05.md','INSTALL.md')
             z.write(ROOT/'LICENSE','LICENSE')
+            z.writestr('MAP-LICENSE.txt', meta['attribution'])
         with zipfile.ZipFile(archive) as z:
             if z.testzip() or hashlib.sha256(z.read(prg.name)).hexdigest() != meta['sha256']:
                 raise ValueError('安装包校验失败')
