@@ -25,9 +25,10 @@ class TestRecorder extends RecordingController {
     var fake;
     var clock = 0;
     var creates = 0;
+    var lastSport = null;
     function initialize() { RecordingController.initialize(); fake = new FakeFitSession(); }
     function now() { return clock; }
-    function createSession(sport) { creates++; return fake; }
+    function createSession(sport) { creates++; lastSport=sport; return fake; }
 }
 class MemorySnapshots extends SnapshotStore {
     var data = {};
@@ -179,9 +180,9 @@ function menuRequiresConfirmationBeforeDiscard(logger as Test.Logger) as Lang.Bo
 (:test)
 function menuStartRequiresFreshFixAndPauseKeepsTrack(logger as Test.Logger) as Lang.Boolean {
     var view = new MapView(); var r = new TestRecorder(); view.recorder = r;
-    view.performAction("walk"); Test.assertEqual(r.creates, 0);
+    view.performAction("start_record"); Test.assertEqual(r.creates, 0);
     view.fix.accept(34.5, 109.5, Position.QUALITY_GOOD, 100, System.getTimer());
-    view.performAction("walk"); Test.assertEqual(r.creates, 1);
+    view.performAction("start_record"); Test.assertEqual(r.creates, 1);
     view.track.accept(34.5, 109.5, true); view.performAction("toggle");
     Test.assertEqual(r.state, r.PAUSED); Test.assertEqual(view.track.size(), 1);
     view.performAction("toggle"); Test.assertEqual(view.track.size(), 1);

@@ -50,6 +50,7 @@ class MapView extends WatchUi.View {
     var prevLon = null;
     var track;
     var recorder;
+    var activityPreference;
     var snapshots;
     var restored = false;
     var recovering = false;
@@ -93,6 +94,7 @@ class MapView extends WatchUi.View {
         fix = new FixState();
         track = new TrackModel();
         recorder = new RecordingController();
+        activityPreference = new ActivityPreference();
         snapshots = new SnapshotStore("weinan.track.v1.");
         var ds = System.getDeviceSettings();
         if (ds != null) {
@@ -205,8 +207,9 @@ class MapView extends WatchUi.View {
         var p = info.position;
         var deg = (p == null) ? null : p.toDegrees();
         var stamp = (info.when == null) ? null : info.when.value();
+        var receivedMs = System.getTimer();
         if (!fix.accept((deg == null) ? null : deg[0], (deg == null) ? null : deg[1],
-                        info.accuracy, stamp, System.getTimer())) {
+                        info.accuracy, stamp, receivedMs)) {
             if (!fix.isCurrent(System.getTimer())) { currentSpeed = 0.0; }
             WatchUi.requestUpdate();
             return;
@@ -220,12 +223,13 @@ class MapView extends WatchUi.View {
             loc = p;
             readCompass();
 
-            var spd = 0.0;
+            var reportedSpeed = null;
             try {
-                if (info.speed != null) { spd = info.speed; }
+                reportedSpeed = info.speed;
             } catch (e) {
-                spd = 0.0;
+                reportedSpeed = null;
             }
+            var spd = track.usableSpeed(reportedSpeed) ? reportedSpeed : 0.0;
             currentSpeed = spd;
 
             // 先按 8 米参考点算航迹方位（走动时用，和轨迹方向天然一致）
@@ -262,7 +266,7 @@ class MapView extends WatchUi.View {
             }
 
             if (recorder.canAccumulate()) {
-                track.accept(deg[0], deg[1], fix.startsSegment);
+                track.acceptSample(deg[0], deg[1], fix.startsSegment, stamp, receivedMs, reportedSpeed);
             } else { track.breakSegment(); }
             followPosition(deg[0], deg[1]);
             WatchUi.requestUpdate();
@@ -330,6 +334,7 @@ class MapView extends WatchUi.View {
     function onBack() {
         if (recovering) { WatchUi.popView(WatchUi.SLIDE_IMMEDIATE); return true; }
         if (menuOpen) {
+            if (menuTitle.equals("活动类型")) { showSettings(); WatchUi.requestUpdate(); return true; }
             if (!menuTitle.equals("地图菜单")) { openMenu(); return true; }
             menuOpen = false; confirmDiscard = false; WatchUi.requestUpdate(); return true;
         }
@@ -491,11 +496,24 @@ class MapView extends WatchUi.View {
             menuRows.add(["丢弃运动…", "discard"]);
             menuRows.add(["保存并退出", "save_exit"]);
         } else {
-            menuRows.add(["开始新步行", "walk"]);
-            menuRows.add(["开始新跑步", "run"]);
+            menuRows.add(["开始记录", "start_record"]);
+            menuRows.add(["设置", "settings"]);
             menuRows.add(["退出地图", "exit"]);
         }
         WatchUi.requestUpdate();
+    }
+
+    function showSettings() {
+        menuTitle="设置"; menuIndex=0;
+        menuRows=[["活动类型："+activityPreference.label(),"activity_types"],["返回地图菜单","settings_back"]];
+    }
+
+    function showActivityTypes() {
+        menuTitle="活动类型"; menuIndex=activityPreference.selected; menuRows=[];
+        for (var i=0; i<activityPreference.choices.size(); i++) {
+            var label=activityPreference.choices[i][0]+(i==activityPreference.selected ? "（当前）" : "");
+            menuRows.add([label,"activity_type",i]);
+        }
     }
 
     function showLibrary(regions) {
@@ -541,15 +559,25 @@ class MapView extends WatchUi.View {
         if (recovering) { return; }
         if (action.equals("discard_yes") && !confirmDiscard) { return; }
         if (action.equals("back")) { menuOpen = false; confirmDiscard = false; }
+        else if (action.equals("settings_back")) { openMenu(); }
+        else if (action.equals("settings") || action.equals("activity_types") || action.equals("activity_type")) {
+            if (recorder.hasSession()) { notice="请先结束当前记录"; openMenu(); }
+            else if (action.equals("settings")) { showSettings(); }
+            else if (action.equals("activity_types")) { showActivityTypes(); }
+            else {
+                notice=activityPreference.choose(menuRows[menuIndex][2]) ? null : "本次已切换，未记住选择";
+                showSettings();
+            }
+        }
         else if (action.equals("regions") || action.equals("routes")) { showLibrary(action.equals("regions")); }
         else if (action.equals("region") || action.equals("route")) { selectLibraryItem(action.equals("region")); }
         else if (action.equals("discard")) {
             confirmDiscard = true; menuIndex = 0;
             menuRows = [["取消丢弃", "cancel"], ["确认丢弃运动", "discard_yes"]];
         } else if (action.equals("cancel")) { openMenu(); }
-        else if (action.equals("walk") || action.equals("run")) {
+        else if (action.equals("start_record")) {
             if (!fix.isCurrent(System.getTimer())) { notice = "请先等待GPS正常"; }
-            else if (recorder.start(action.equals("walk") ? Toybox.Activity.SPORT_WALKING : Toybox.Activity.SPORT_RUNNING)) {
+            else if (recorder.start(activityPreference.sport())) {
                 track.clear(); sessionStarted = true; notice = null; checkpoint(true); menuOpen = false;
             } else { notice = recorder.error; openMenu(); }
         } else if (action.equals("toggle")) {

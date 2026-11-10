@@ -122,7 +122,7 @@ function partialRecoveryCannotStartRecordOrOverwriteSavedData(logger as Test.Log
     Test.assert(view.track.size() > 0 && view.track.size() < 800);
     var size = view.track.size();
     view.fix.accept(34.5, 109.5, Position.QUALITY_GOOD, 100, System.getTimer());
-    view.performAction("walk"); view.checkpoint(true); view.onHeadingTick(); view.openMenu();
+    view.performAction("start_record"); view.checkpoint(true); view.onHeadingTick(); view.openMenu();
     Test.assertEqual(view.recorder.creates, 0); Test.assert(!view.menuOpen);
     Test.assertEqual(view.track.size(), size); Test.assertEqual(store.writes, 0);
     var bitmap = Graphics.createBufferedBitmap({:width=>260, :height=>260}).get();

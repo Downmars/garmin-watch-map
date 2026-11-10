@@ -13,6 +13,8 @@
 
 路线蓝线用于查看预设路径，深红色轨迹记录实际移动。选中地区时进入浏览，选择路线时地图移到起点，BACK 回中。此次范围为导入、手绘和离线切换；剩余距离与偏航提醒属于后续导航功能。
 
+手表主菜单用「开始记录」启动活动；「设置 → 活动类型」可选择步行、跑步、骑行或通用轨迹，选择会保存在手表上。活动类型不需要重新制包。
+
 若提示 `Invalid device id specified: 'fr255'`，在「制包设置」中检查 **FR255 设备目录**。默认自动读取 Garmin SDK Manager 的下载位置。Windows 常见设备目录为 `%APPDATA%\Garmin\ConnectIQ\Devices\fr255`，应包含 `compiler.json` 与 `fr255.bin`。设备目录缺失时，在 SDK Manager 的 Devices 页安装普通 Forerunner 255。alpha.2 会先检查设备配置，并把选中的目录传给编译器。本版本使用 Garmin SDK 9.3.0 验证。
 
 ## 在线底图
