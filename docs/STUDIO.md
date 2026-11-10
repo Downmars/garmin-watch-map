@@ -42,3 +42,18 @@ python tools/freeze_studio.py
 自动化制包可以用 `python -X utf8 tools/atlas.py examples/atlas.json --check` 检查项目，再指定 `--sdk`、`--java`、`--key`、`--output`。UTF-8 模式可在英文版 Windows 重定向日志时正确输出中文地区名。项目使用稳定的地区/路线 id 和相对 GPX 路径，格式见 examples/atlas.json。底图生成、GPX 解析和桌面界面分别使用同一套制包逻辑。底图和编译在临时目录完成，校验全部通过后才替换输出 ZIP。个人 GPX 会成为计划路线的一部分，只把成品分享给预期的接收者。
 
 底图、数据许可与手表安装步骤见 [安装说明](INSTALL-V05.md)。
+## v0.7 统一地图图源
+
+点击「地图图源」，选择 MapTiler 街道、MapTiler 户外或自定义 XYZ。MapTiler 填访问密钥，自定义图源填写 HTTPS 模板、样式名称、简短署名和完整许可。可分别设置是否启用手机在线请求和是否已确认离线授权。
+
+新图源共用预览、离线制包和手表在线请求，使用同一套 16 色调色板。坐标需为 WGS84，投影为 Web Mercator，瓦片为 XYZ 256px 图片，提供 z13/z15。高德 GCJ-02、百度 BD-09、TMS、PBF 和 512px 图片需要相应适配，当前会在配置或图片校验时拒绝。
+
+离线制包会预下载所选区域。MapTiler API 批量下载需要 Custom 方案或相应授权，勾选前先核实账户权限。说明见 [MapTiler 官方离线文档](https://docs.maptiler.com/guides/using-map/atak-maps/)。完整署名写入安装 ZIP 的 `MAP-LICENSE.txt`，手表显示简短署名。项目文件及手表安装包中可能包含在线访问密钥，分享前使用专用、可撤销的访问密钥。
+
+旧项目打开后保留原 HOT 离线与独立在线地址。选择「保留旧项目配置」可继续编辑旧地址，切换到新图源并保存后，三处统一使用新配置。每个项目当前选择一个图源，更换后重新制包。
+
+预览下方显示底图资源数量、待下载数量及未压缩总量估算。安装文件的大小取决于地图内容和 Garmin 编译器的压缩，以编译后的 PRG 实测为准，超过 15 MB 会停止并保留旧 ZIP。底图总量估算不代表手表同时占用的内存。
+
+缓存按图源和样式隔离，切换图源后不会显示另一厂家的旧瓦片。新图源缓存位于设置的缓存目录下 `sources-v1/<指纹>/z/x/y.png`，旧 HOT 缓存保持原位置。
+
+MapTiler 预设面向具备离线授权的使用方案。免费方案还要求展示品牌 Logo，使用不同方案或图源时按其要求核对。署名规则见 [MapTiler 官方说明](https://docs.maptiler.com/guides/map-design/attribution/add-attribution/)。

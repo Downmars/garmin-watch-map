@@ -10,6 +10,7 @@ import urllib.request
 
 from PIL import Image
 import make_city_pack as city
+from map_source import quantize
 
 
 def layer_grids(lat, lon, km):
@@ -31,7 +32,9 @@ def layer_grids(lat, lon, km):
     return levels
 
 
-def generate(app, output, cache_dir, lat, lon, km, tag='', progress=None):
+def generate(app, output, cache_dir, lat, lon, km, tag='', progress=None, source=None):
+    if source is not None:
+        source.require_offline()
     app, output = Path(app), Path(output)
     levels = layer_grids(lat, lon, km)
     output.mkdir(parents=True, exist_ok=True)
@@ -47,10 +50,17 @@ def generate(app, output, cache_dir, lat, lon, km, tag='', progress=None):
                     tx, ty = layer['origin_x'] // 256 + col * 2, layer['origin_y'] // 256 + row * 2
                     for dy in range(2):
                         for dx in range(2):
-                            tile.paste(city.fetch_tile(layer['zoom'], tx + dx, ty + dy, cache,
-                                                       cache_dir=str(cache_dir)), (dx * 256, dy * 256))
+                            if source is None:
+                                image = city.fetch_tile(layer['zoom'], tx + dx, ty + dy, cache,
+                                                        cache_dir=str(cache_dir))
+                            else:
+                                image = source.fetch(layer['zoom'], tx + dx, ty + dy, cache, cache_dir)
+                            tile.paste(image, (dx * 256, dy * 256))
                     name = f"tile_{tag}z{layer['zoom']}_{row}_{col}.png"
-                    tile.save(stage / name, 'PNG', optimize=True)
+                    if source is not None:
+                        quantize(tile).save(stage / name, 'PNG', optimize=True, bits=4)
+                    else:
+                        tile.save(stage / name, 'PNG', optimize=True)
                     resources.append(f"Rez.Drawables.Tile_{tag}z{layer['zoom']}_{row}_{col}")
                     names.append(name)
                     if progress is None:
@@ -88,6 +98,8 @@ def generate(app, output, cache_dir, lat, lon, km, tag='', progress=None):
         metadata = dict(center_wgs84=[lat, lon], requested_km=km, canonical_zoom=15, tile_pixels=512,
                         source='OpenStreetMap France HOT', levels=[{k:v for k,v in level.items() if k != 'resources'} for level in levels],
                         image_count=len(names), attribution='Map data (c) OpenStreetMap contributors, ODbL; tiles (c) OpenStreetMap France, CC BY-SA 2.0')
+        if source is not None:
+            metadata.update(source=source.credit, attribution=source.attribution, map_source=source.metadata())
         (output / 'multilevel-metadata.json').write_text(json.dumps(metadata, indent=2), encoding='utf-8')
         return metadata
 

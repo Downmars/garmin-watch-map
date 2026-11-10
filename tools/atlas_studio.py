@@ -16,7 +16,8 @@ from tkinter import filedialog, messagebox, ttk
 import uuid
 
 from PIL import Image, ImageDraw, ImageTk
-from atlas import ROOT, VERSION, build, online_config, prepare, run_tool, validate_label
+from atlas import ROOT, VERSION, build, online_config, prepare, project_budget, run_tool, validate_label
+from map_source import HOT_CREDIT, project_source, quantize
 from gpx_route import read_gpx
 from make_city_pack import fetch_tile, lon_to_x, lat_to_y
 from make_multilevel_pack import layer_grids
@@ -115,7 +116,7 @@ def settings_defaults():
     return values
 
 
-def preview_image(region, cache, size, online=False):
+def preview_image(region, cache, size, online=False, source=None):
     layers = layer_grids(region['lat'],region['lon'],region['km'])
     base = layers[0]
     level = 15 if max(base['cols'],base['rows']) <= 3 else 13
@@ -125,16 +126,22 @@ def preview_image(region, cache, size, online=False):
     image = Image.new('RGB',(width,height),'#e3e9e3')
     pen = ImageDraw.Draw(image)
     hits = 0
+    memory = {}
     for tx in range(left//256,(left+width-1)//256+1):
         for ty in range(top//256,(top+height-1)//256+1):
             xy = (tx*256-left,ty*256-top)
-            path = Path(cache)/str(level)/str(tx)/(str(ty)+'.png')
+            path = source.cache_path(cache,level,tx,ty) if source else Path(cache)/str(level)/str(tx)/(str(ty)+'.png')
             if online or path.exists():
-                tile = fetch_tile(level,tx,ty,{},cache_dir=str(cache))
+                if source is None:
+                    tile = fetch_tile(level,tx,ty,memory,cache_dir=str(cache))
+                else:
+                    tile = source.fetch(level,tx,ty,memory,cache,allow_download=online)
                 image.paste(tile,xy)
                 hits += 1
             else:
                 pen.rectangle([xy,(xy[0]+255,xy[1]+255)],outline='#c6d0c8')
+    if source is not None:
+        image = quantize(image).convert('RGB')
     image.thumbnail(size,Image.Resampling.LANCZOS)
     sx,sy=image.width/width,image.height/height
     pen=ImageDraw.Draw(image)
@@ -169,7 +176,7 @@ class Studio:
         shell.pack(fill='both',expand=True)
         bar=ttk.Frame(shell); bar.pack(fill='x',pady=(0,12))
         ttk.Label(bar,text='离线地图制包器',style='Title.TLabel').pack(side='left')
-        for label,fn in [('制包设置',self.configure),('在线底图',self.edit_online),('保存项目',self.save),('打开项目',self.open),('新项目',self.new)]:
+        for label,fn in [('制包设置',self.configure),('地图图源',self.edit_source),('保存项目',self.save),('打开项目',self.open),('新项目',self.new)]:
             ttk.Button(bar,text=label,command=lambda f=fn:self.guard(f)).pack(side='right',padx=2)
         middle=ttk.Frame(shell); middle.pack(fill='both',expand=True)
         left=ttk.Frame(middle); left.pack(side='left',fill='y',padx=(0,14))
@@ -190,6 +197,7 @@ class Studio:
         self.canvas=tk.Canvas(right,bg='#e3e9e3',highlightthickness=0,width=480,height=280)
         self.canvas.pack(fill='both',expand=True,pady=(5,4))
         self.detail=ttk.Label(right,wraplength=540); self.detail.pack(anchor='w')
+        self.budget_label=ttk.Label(right,wraplength=540); self.budget_label.pack(anchor='w',pady=(4,0))
         self.log=tk.Text(shell,height=4,wrap='word',state='disabled')
         self.log.pack(fill='x',pady=(9,5))
         footer=ttk.Frame(shell); footer.pack(fill='x')
@@ -224,16 +232,24 @@ class Studio:
         self.routes.delete(0,'end')
         self.canvas.delete('all')
         if not self.regions.curselection():
-            self.detail.config(text='添加地区或从 GPX 建立地区'); self.map_title.config(text='覆盖范围'); return
+            self.detail.config(text='添加地区或从 GPX 建立地区'); self.map_title.config(text='覆盖范围')
+            self.budget_label.config(text='FR255 预算 180 张底图 / 15 MB 安装文件')
+            return
         r=self.project['regions'][self.index()]
         for t in r['routes']: self.routes.insert('end',t['name'])
         self.map_title.config(text=r['name'])
         w=max(360,self.canvas.winfo_width()-8); h=max(210,self.canvas.winfo_height()-8)
-        image,hits=preview_image(r,self.settings['cache'],(w,h))
+        source = project_source(self.project)
+        image,hits=preview_image(r,self.settings['cache'],(w,h),source=source)
         self.photo=ImageTk.PhotoImage(image,master=self.root)
         self.canvas.create_image(w/2,h/2,image=self.photo)
         label='缓存底图' if hits else '范围示意图，可载入底图'
-        self.detail.config(text=f"{r['lat']:.4f}°, {r['lon']:.4f}°   ·   {r['km']:g} km   ·   {label}\n© OpenStreetMap contributors · 底图 OpenStreetMap France")
+        credit = source.credit if source else HOT_CREDIT
+        pairing = '预览 / 离线 / 在线共用图源' if source else '旧项目配置，离线为 HOT'
+        self.detail.config(text=f"{r['lat']:.4f}°, {r['lon']:.4f}°   ·   {r['km']:g} km   ·   {label}\n{credit} · {pairing}")
+        budget = project_budget(self.project,Path.cwd(),self.settings['cache'])
+        self.budget_label.config(text=f"FR255 底图 {budget['images']}/180 张 · 待下载 {budget['download_tiles']} 张瓦片\n"
+                                f"底图未压缩总量约 {budget['bitmap_bytes']/1024/1024:.1f} MiB · 安装文件限 15 MB（编译后核验）")
 
     def changed(self):
         self.dirty=True
@@ -295,7 +311,7 @@ class Studio:
             proposed=list(regions)
             if new: proposed.append(updated)
             else: proposed[target]=updated
-            prepare(dict(version=1,regions=proposed),Path.cwd())
+            prepare({**self.project,'regions':proposed},Path.cwd())
             self.project['regions']=proposed; self.changed(); self.refresh(target)
         self.form('地图地区',[(k,l,region[k],None) for k,l in
                   [('name','名称'),('lat','中心纬度 WGS84'),('lon','中心经度 WGS84'),('km','区域边长（公里）')]],accept)
@@ -324,7 +340,7 @@ class Studio:
     def draw_route(self):
         index=self.index()
         region=self.project['regions'][index]
-        image,_=preview_image(region,self.settings['cache'],(640,420))
+        image,_=preview_image(region,self.settings['cache'],(640,420),source=project_source(self.project))
         dlg=tk.Toplevel(self.root); dlg.title('手绘路线 · '+region['name'])
         dlg.transient(self.root); dlg.grab_set()
         ttk.Label(dlg,text='依次点击途经点，相邻点以直线相连。').pack(anchor='w',padx=12,pady=8)
@@ -385,17 +401,107 @@ class Studio:
             del self.project['regions'][idx]['routes'][sel[0]]
             self.changed(); self.refresh(idx)
 
-    def edit_online(self):
-        current=self.project.get('online') or {}
-        def accept(values):
-            if values['url']:
-                self.project['online']=online_config({'online':values})
+    def edit_source(self):
+        current = self.project.get('map_source') or {}
+        legacy = self.project.get('online') or {}
+        options = ['保留旧项目配置', 'MapTiler 街道', 'MapTiler 户外', '自定义 XYZ']
+        selection = options[0]
+        if current.get('provider') == 'maptiler':
+            selection = options[2] if current.get('style') == 'outdoor-v4' else options[1]
+        elif current:
+            selection = options[3]
+        dialog = tk.Toplevel(self.root)
+        dialog.title('地图图源')
+        dialog.transient(self.root)
+        dialog.grab_set()
+        area = ttk.Frame(dialog,padding=16)
+        area.pack(fill='both',expand=True)
+        selected = tk.StringVar(dialog,value=selection)
+        ttk.Label(area,text='图源方案').grid(row=0,column=0,sticky='w')
+        picker = ttk.Combobox(area,textvariable=selected,values=options,state='readonly',width=48)
+        picker.grid(row=0,column=1,sticky='ew',pady=4)
+        fields = {}
+        entries = {}
+        for row,(name,label) in enumerate([
+                ('style','地图样式'),('key','访问密钥'),('url','HTTPS 瓦片模板'),
+                ('credit','手表简短署名'),('attribution','完整署名与许可')],1):
+            value = current.get(name,legacy.get(name,''))
+            fields[name] = tk.StringVar(dialog,value=value)
+            ttk.Label(area,text=label).grid(row=row,column=0,sticky='w',padx=(0,10),pady=4)
+            entries[name] = ttk.Entry(area,textvariable=fields[name],width=56,show='*' if name=='key' else '')
+            entries[name].grid(row=row,column=1,sticky='ew')
+        online = tk.BooleanVar(dialog,value=current.get('online',True) if current else bool(legacy))
+        offline = tk.BooleanVar(dialog,value=current.get('offline_allowed',False))
+        online_button = ttk.Checkbutton(area,text='连接手机时使用该在线图源',variable=online)
+        online_button.grid(row=6,column=1,sticky='w',pady=4)
+        offline_button = ttk.Checkbutton(area,text='已确认允许区域下载、离线使用及所需分发',variable=offline)
+        offline_button.grid(row=7,column=1,sticky='w',pady=4)
+        explanation = ttk.Label(area,wraplength=510)
+        explanation.grid(row=8,column=0,columnspan=2,sticky='w',pady=10)
+        ttk.Label(area,text='新图源支持 WGS84 / Web Mercator / XYZ / 256px，使用街道 z15 和概览 z13。',
+                  wraplength=570).grid(row=9,column=0,columnspan=2,sticky='w')
+
+        def update_fields(event=None):
+            chosen = selected.get()
+            is_legacy = chosen == options[0]
+            is_maptiler = chosen in options[1:3]
+            for entry in entries.values():
+                entry.config(state='normal')
+            if is_maptiler:
+                style = 'streets-v4' if chosen == options[1] else 'outdoor-v4'
+                fields['style'].set(style)
+                fields['url'].set('https://api.maptiler.com/maps/'+style+'/256/{z}/{x}/{y}.png')
+                fields['credit'].set('©MapTiler ©OpenStreetMap')
+                fields['attribution'].set('© MapTiler https://www.maptiler.com/copyright/; © OpenStreetMap contributors, ODbL https://www.openstreetmap.org/copyright')
+                for name in ('style','url','credit','attribution'):
+                    entries[name].config(state='readonly')
+                explanation.config(text='预览、离线制包与手表在线使用同一地图。MapTiler API 批量下载需要 Custom 方案或对应授权。')
+            elif is_legacy:
+                fields['url'].set(legacy.get('url',''))
+                fields['credit'].set(legacy.get('credit',''))
+                for name in ('style','key','attribution'):
+                    entries[name].config(state='disabled')
+                explanation.config(text='保留旧版 HOT 离线底图和单独在线地址。在线地址留空时仅离线。选择其他方案后将统一三处图源。')
             else:
-                self.project.pop('online',None)
-            self.changed()
-        self.form('在线底图 · 256px WGS84 XYZ',[
-            ('url','HTTPS 瓦片地址（留空仅离线）',current.get('url',''),None),
-            ('credit','图源署名',current.get('credit',''),None)],accept)
+                if not fields['style'].get():
+                    fields['style'].set('自定义地图')
+                entries['key'].config(state='disabled')
+                explanation.config(text='填写厂家提供的 HTTPS 图片模板和完整署名。需各含一个 {z}/{x}/{y}。GCJ-02、BD-09 或矢量 PBF 图源需要另行适配。')
+            offline_button.config(state='disabled' if is_legacy else 'normal')
+            online_button.config(state='disabled' if is_legacy else 'normal')
+            if event is not None:
+                offline.set(False)
+                online.set(not is_legacy)
+
+        def accept():
+            try:
+                proposed = copy.deepcopy(self.project)
+                if selected.get() == options[0]:
+                    proposed.pop('map_source',None)
+                    url = fields['url'].get().strip()
+                    if url:
+                        proposed['online'] = online_config({'online':dict(url=url,credit=fields['credit'].get().strip())})
+                    else:
+                        proposed.pop('online',None)
+                else:
+                    config = {name:value.get().strip() for name,value in fields.items()}
+                    config.update(provider='maptiler' if selected.get() in options[1:3] else 'custom',
+                                  online=online.get(),offline_allowed=offline.get(),
+                                  coordinates='WGS84',projection='EPSG:3857',scheme='XYZ',tile_size=256)
+                    if config['provider'] == 'custom':
+                        config.pop('key',None)
+                    project_source({'map_source':config})
+                    proposed['map_source'] = config
+                    proposed.pop('online',None)
+                self.project = proposed
+                self.changed()
+                dialog.destroy()
+                self.refresh_detail()
+            except Exception as exc:
+                messagebox.showerror('地图图源',str(exc),parent=dialog)
+        picker.bind('<<ComboboxSelected>>',update_fields)
+        update_fields()
+        ttk.Button(area,text='保存设置',command=accept).grid(row=10,column=1,sticky='e',pady=(12,0))
 
     def configure(self):
         def accept(v):
@@ -425,11 +531,15 @@ class Studio:
     def fetch_preview(self):
         r=copy.deepcopy(self.project['regions'][self.index()])
         cache=self.settings['cache']
-        self.job('正在载入预览底图',lambda:(preview_image(r,cache,(480,320),True),'预览底图已缓存')[1])
+        source=project_source(self.project)
+        self.job('正在载入预览底图',lambda:(preview_image(r,cache,(480,320),True,source),'预览底图已缓存')[1])
 
     def start_build(self):
         obj=copy.deepcopy(self.project)
         prepare(obj,Path.cwd())
+        source=project_source(obj)
+        if source is not None:
+            source.require_offline()
         v=self.settings.copy()
         if not (Path(v['sdk'])/'bin/monkeybrains.jar').is_file() or not Path(v['key']).is_file() or not (Path(v['java']).is_file() or shutil.which(v['java'])):
             messagebox.showinfo('首次制包设置','请选择 Garmin SDK、Java 17 和签名文件。签名也可以在设置里创建。')
