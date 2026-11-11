@@ -17,9 +17,11 @@ import zipfile
 from gpx_route import read_gpx, simplify
 from make_multilevel_pack import generate, layer_grids
 from map_source import HOT_CREDIT, HOT_ATTRIBUTION, PALETTE, project_source, validate_template
+from route_document import RouteDocument, validate_waypoints
+from gpx_route import project as project_point
 
 ROOT = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parents[1]))
-VERSION = '0.7.0-alpha.1'
+VERSION = '0.8.0-alpha.1'
 MAX_IMAGES = 180
 MAX_BYTES = 15_000_000
 
@@ -72,7 +74,7 @@ def configure_network(app, config):
     tree.write(app/'manifest.xml',encoding='utf-8',xml_declaration=True)
 
 
-def prepare(project, folder):
+def prepare(project, folder, editing=False):
     online_config(project)
     if project.get('version') != 1:
         raise ValueError("不支持的项目版本")
@@ -99,6 +101,15 @@ def prepare(project, folder):
         if total > MAX_IMAGES:
             raise ValueError(f"底图超过 {MAX_IMAGES} 张，请缩小地区或拆成两个安装包")
         base = layers[0]
+        markers = validate_waypoints(region.get('waypoints',[]))
+        synced = [item for item in markers if item['sync']]
+        if not editing and len(synced)>32:
+            raise ValueError('每个地区最多同步 32 个地点，请调整同步开关')
+        for item in synced:
+            x,y = project_point(item['lat'],item['lon'])
+            if not editing and not (base['origin_x']<=x<base['origin_x']+base['cols']*512 and
+                                    base['origin_y']<=y<base['origin_y']+base['rows']*512):
+                raise ValueError(f"地点 {item['name']} 超出 {region['name']} 的离线范围")
         routes, route_ids = [], set()
         if len(region.get('routes', [])) > 16:
             raise ValueError("每个地区最多 16 条路线")
@@ -107,13 +118,17 @@ def prepare(project, folder):
             if route['id'] in route_ids:
                 raise ValueError("同一地区的路线标识重复")
             route_ids.add(route['id'])
-            segments = read_gpx(folder / route['gpx'])
+            if editing:
+                document = RouteDocument.load(folder / route['gpx'])
+                segments = [[project_point(*point) for point in segment] for segment in document.segments]
+            else:
+                segments = read_gpx(folder / route['gpx'])
             for seg in segments:
                 for x,y in seg:
-                    if not (base['origin_x'] <= x < base['origin_x'] + base['cols']*512 and
+                    if not editing and not (base['origin_x'] <= x < base['origin_x'] + base['cols']*512 and
                             base['origin_y'] <= y < base['origin_y'] + base['rows']*512):
                         raise ValueError(f"{route['name']} 超出 {region['name']} 范围，请调整中心/边长")
-            routes.append((route, simplify(segments)))
+            routes.append((route, [] if editing else simplify(segments)))
         summary.append((region, layers, routes))
     return summary
 
@@ -165,7 +180,19 @@ def create_app(app, scratch, cache, plan, progress, source=None):
             (route_dir/filename).write_text(json.dumps(points), encoding='utf-8')
             ET.SubElement(route_xml,'jsonData',id=rid,filename=filename)
             route_desc.append(f'["{route["id"]}","{route["name"]}",Rez.JsonData.{rid}]')
-        records.append(f'["{region["id"]}","{region["name"]}",{float(region["lat"]):.7f},{float(region["lon"]):.7f},{layer_expr},['+','.join(route_desc)+']]')
+        marker_resource = 'null'
+        markers = []
+        for item in validate_waypoints(region.get('waypoints',[])):
+            if item['sync']:
+                x,y = project_point(item['lat'],item['lon'])
+                markers.append([x,y,item['name'],item['kind'],item['description'][:160]])
+        if markers:
+            rid = f'Waypoints_{i}'
+            filename = rid+'.json'
+            (route_dir/filename).write_text(json.dumps(markers,ensure_ascii=False),encoding='utf-8')
+            ET.SubElement(route_xml,'jsonData',id=rid,filename=filename)
+            marker_resource = f'Rez.JsonData.{rid}'
+        records.append(f'["{region["id"]}","{region["name"]}",{float(region["lat"]):.7f},{float(region["lon"]):.7f},{layer_expr},['+','.join(route_desc)+'],'+marker_resource+']')
     ET.ElementTree(xml).write(drawables/'drawables.xml', encoding='utf-8')
     if len(route_xml):
         ET.ElementTree(route_xml).write(route_dir/'routes.xml', encoding='utf-8')
@@ -174,7 +201,7 @@ def create_app(app, scratch, cache, plan, progress, source=None):
 
 
 def project_budget(project, folder, cache):
-    plan = prepare(project, folder)
+    plan = prepare(project, folder, editing=True)
     source = project_source(project)
     coordinates = set()
     images = 0
@@ -294,6 +321,7 @@ def build(project, folder, output, sdk, java, key, cache, progress=print, test=F
                     budget=project_budget(project,folder,cache),
                     online_source=online['credit'] if online else None,
                     regions=[dict(name=r['name'], id=r['id'], center=[r['lat'],r['lon']], km=r['km'],
+                                  waypoints=sum(item.get('sync',True) for item in r.get('waypoints',[])),
                                   routes=[dict(name=t['name'], points=sum(v is not None for v in pts)//2) for t,pts in routes]) for r,_,routes in plan])
         archive = scratch/'install.zip'
         with zipfile.ZipFile(archive,'w',zipfile.ZIP_DEFLATED) as z:

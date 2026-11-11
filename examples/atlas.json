@@ -2,6 +2,7 @@
   "version": 1,
   "regions": [
     {"id":"weinan","name":"渭南","lat":34.5,"lon":109.5,"km":20,
+     "waypoints":[{"id":"example_place","name":"示例地点","lat":34.5,"lon":109.5,"kind":0,"description":"合成演示地点，请根据实际情况编辑。","sync":true}],
      "routes":[{"id":"demo","name":"折线示例","gpx":"routes/weinan-demo.gpx"},
                {"id":"segments","name":"分段示例","gpx":"routes/weinan-segments.gpx"}]},
     {"id":"xian","name":"西安钟楼","lat":34.261,"lon":108.944,"km":2,

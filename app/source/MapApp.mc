@@ -490,6 +490,7 @@ class MapView extends WatchUi.View {
         menuTitle = "地图菜单";
         menuOpen = true; menuIndex = 0; confirmDiscard = false;
         menuRows = [["返回地图", "back"], ["地图地区", "regions"], ["GPX 路线", "routes"]];
+        if (atlas.waypoints.items.size() > 0) { menuRows.add(["地点标注", "waypoints"]); }
         if (recorder.hasSession()) {
             menuRows.add([recorder.state == recorder.RUNNING ? "暂停运动" : "继续运动", "toggle"]);
             menuRows.add(["保存运动", "save"]);
@@ -506,6 +507,29 @@ class MapView extends WatchUi.View {
     function showSettings() {
         menuTitle="设置"; menuIndex=0;
         menuRows=[["活动类型："+activityPreference.label(),"activity_types"],["返回地图菜单","settings_back"]];
+    }
+
+    function showWaypoints() {
+        menuTitle = "地点标注"; menuIndex = 0;
+        menuRows = [["返回地图", "back"]];
+        for (var i = 0; i < atlas.waypoints.items.size(); i++) {
+            menuRows.add([atlas.waypoints.shortName(i), "waypoint", i]);
+        }
+    }
+
+    function showWaypoint(index) {
+        var item = atlas.waypoints.items[index];
+        atlas.waypoints.selected = index;
+        menuTitle = atlas.waypoints.shortName(index); menuIndex = 0;
+        menuRows = [["在地图上查看", "waypoint_jump", index],
+                    [atlas.waypoints.kinds[item[3]], "waypoint_info"]];
+        var description = item[4];
+        for (var start = 0; start < description.length(); start += 12) {
+            var end = start + 12;
+            if (end > description.length()) { end = description.length(); }
+            menuRows.add([description.substring(start, end), "waypoint_info"]);
+        }
+        menuRows.add(["返回地点列表", "waypoints"]);
     }
 
     function showActivityTypes() {
@@ -559,6 +583,14 @@ class MapView extends WatchUi.View {
         if (recovering) { return; }
         if (action.equals("discard_yes") && !confirmDiscard) { return; }
         if (action.equals("back")) { menuOpen = false; confirmDiscard = false; }
+        else if (action.equals("waypoints")) { showWaypoints(); }
+        else if (action.equals("waypoint")) { showWaypoint(menuRows[menuIndex][2]); }
+        else if (action.equals("waypoint_jump")) {
+            var selectedPoint = atlas.waypoints.items[menuRows[menuIndex][2]];
+            centerGX = selectedPoint[0]; centerGY = selectedPoint[1];
+            browse.pan(); menuOpen = false;
+            clampCenter(); queueMapTiles();
+        }
         else if (action.equals("settings_back")) { openMenu(); }
         else if (action.equals("settings") || action.equals("activity_types") || action.equals("activity_type")) {
             if (recorder.hasSession()) { notice="请先结束当前记录"; openMenu(); }
@@ -717,6 +749,7 @@ class MapView extends WatchUi.View {
         }
         if (phoneTiles!=null) { phoneTiles.draw(dc,left*scale,top*scale); }
         atlas.draw(dc, left, top, scale, W, H);
+        atlas.waypoints.draw(dc, left, top, scale, W, H);
         TrackRenderer.drawScaled(dc, track, left, top, W, H, scale);
 
         if (loc != null) {

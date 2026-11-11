@@ -8,9 +8,16 @@ class OfflineAtlas {
     var routeIndex = -1;
     var points = null;
     var restoredSelection = false;
+    var waypoints;
 
     function initialize() {
         region = MapCatalog.REGIONS[0];
+        waypoints = new WaypointLayer();
+        loadWaypoints();
+    }
+
+    function loadWaypoints() {
+        return waypoints.load(region.size() > 6 ? region[6] : null);
     }
 
     function restoreChoice() {
@@ -21,6 +28,7 @@ class OfflineAtlas {
                 var r = MapCatalog.REGIONS[n];
                 if (r[0].equals(saved[0])) {
                     region = r;
+                    loadWaypoints();
                     restoredSelection = true;
                     for (var i = 0; i < r[5].size(); i++) {
                         if (r[5][i][0].equals(saved[1])) { chooseRoute(i); break; }
@@ -42,6 +50,7 @@ class OfflineAtlas {
             region = MapCatalog.REGIONS[index];
             points = null;
             routeIndex = -1;
+            loadWaypoints();
         }
     }
 
