@@ -32,7 +32,7 @@ def layer_grids(lat, lon, km):
     return levels
 
 
-def generate(app, output, cache_dir, lat, lon, km, tag='', progress=None, source=None):
+def generate(app, output, cache_dir, lat, lon, km, tag='', progress=None, source=None, transfer=None):
     if source is not None:
         source.require_offline()
     app, output = Path(app), Path(output)
@@ -52,9 +52,9 @@ def generate(app, output, cache_dir, lat, lon, km, tag='', progress=None, source
                         for dx in range(2):
                             if source is None:
                                 image = city.fetch_tile(layer['zoom'], tx + dx, ty + dy, cache,
-                                                        cache_dir=str(cache_dir))
+                                                        cache_dir=str(cache_dir),transfer=transfer)
                             else:
-                                image = source.fetch(layer['zoom'], tx + dx, ty + dy, cache, cache_dir)
+                                image = source.fetch(layer['zoom'], tx + dx, ty + dy, cache, cache_dir,transfer=transfer)
                             tile.paste(image, (dx * 256, dy * 256))
                     name = f"tile_{tag}z{layer['zoom']}_{row}_{col}.png"
                     if source is not None:

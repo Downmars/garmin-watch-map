@@ -21,6 +21,10 @@ from map_source import HOT_CREDIT, project_source, quantize
 from gpx_route import read_gpx
 from make_city_pack import fetch_tile, lon_to_x, lat_to_y
 from make_multilevel_pack import layer_grids
+from map_canvas import MapCanvas, geographic
+from route_document import DraftStore, RouteDocument, atomic_write, merge_waypoints
+from route_editor import RouteEditor
+from download_progress import DownloadProgress
 
 EXAMPLE = ROOT/'examples/atlas.json'
 
@@ -40,7 +44,7 @@ def load_project(path):
     for region in obj['regions']:
         for route in region.get('routes', []):
             route['gpx'] = str((Path(path).parent/route['gpx']).resolve())
-    prepare(obj, Path.cwd()) if obj['regions'] else None
+    prepare(obj, Path.cwd(),editing=True) if obj['regions'] else None
     return obj
 
 
@@ -64,8 +68,9 @@ def save_project(obj, path):
 
 
 def region_from_gpx(path):
-    segments = read_gpx(path)
-    points = [p for seg in segments for p in seg]
+    document = RouteDocument.load(path)
+    points = [(lon_to_x(lon,15),lat_to_y(lat,15)) for segment in document.segments for lat,lon in segment]
+    points.extend((lon_to_x(p['lon'],15),lat_to_y(p['lat'],15)) for p in document.waypoints)
     xs, ys = zip(*points)
     x = (min(xs)+max(xs))/2
     y = (min(ys)+max(ys))/2
@@ -157,7 +162,7 @@ def preview_image(region, cache, size, online=False, source=None):
 class Studio:
     def __init__(self, root):
         self.root = root
-        root.title('离线地图制包器 · FR255')
+        root.title('离线地图制包器 · FR255 · '+VERSION)
         root.geometry('960x680')
         root.minsize(820,600)
         self.project = load_project(EXAMPLE)
@@ -165,8 +170,12 @@ class Studio:
         self.settings = settings_defaults()
         self.dirty = False
         self.busy = False
+        self.build_transfer = None
         self.events = queue.Queue()
         self.photo = None
+        self.preview_region = None
+        self.autosave_job = None
+        self.recovery_path = app_data()/'v08-project-draft.json'
         root.protocol('WM_DELETE_WINDOW',self.close)
         style = ttk.Style(root)
         style.configure('Title.TLabel',font=('Microsoft YaHei UI',16,'bold'))
@@ -189,21 +198,25 @@ class Studio:
         ttk.Label(left,text='该地区的路线',style='Section.TLabel').pack(anchor='w',pady=(9,0))
         self.routes=tk.Listbox(left,width=24,height=5,exportselection=False)
         self.routes.pack(fill='both',expand=True,pady=5)
-        self.buttons(left,[('导入 GPX',self.import_routes),('手绘路线',self.draw_route),('移除',self.remove_route)])
+        self.buttons(left,[('导入 GPX',self.import_routes),('新建路线',self.draw_route),('移除',self.remove_route)])
+        self.buttons(left,[('编辑所选',lambda:self.edit_map(True)),('地点标注',lambda:self.edit_map(False,'地点'))])
+        self.routes.bind('<Double-Button-1>',lambda event:self.guard(lambda:self.edit_map(True)))
         right=ttk.Frame(middle); right.pack(side='left',fill='both',expand=True)
         top=ttk.Frame(right); top.pack(fill='x')
         self.map_title=ttk.Label(top,text='覆盖范围',style='Section.TLabel'); self.map_title.pack(side='left')
         ttk.Button(top,text='载入预览底图',command=lambda:self.guard(self.fetch_preview)).pack(side='right')
-        self.canvas=tk.Canvas(right,bg='#e3e9e3',highlightthickness=0,width=480,height=280)
-        self.canvas.pack(fill='both',expand=True,pady=(5,4))
+        self.preview=MapCanvas(right,self.settings['cache'],project_source(self.project))
+        self.preview.pack(fill='both',expand=True,pady=(5,4))
         self.detail=ttk.Label(right,wraplength=540); self.detail.pack(anchor='w')
         self.budget_label=ttk.Label(right,wraplength=540); self.budget_label.pack(anchor='w',pady=(4,0))
+        self.download_status=ttk.Label(shell,wraplength=780)
+        self.download_status.pack(fill='x',pady=(4,0))
         self.log=tk.Text(shell,height=4,wrap='word',state='disabled')
         self.log.pack(fill='x',pady=(9,5))
         footer=ttk.Frame(shell); footer.pack(fill='x')
         self.status=ttk.Label(footer,text='就绪'); self.status.pack(side='left')
         ttk.Button(footer,text='生成手表安装包…',style='Build.TButton',command=lambda:self.guard(self.start_build)).pack(side='right')
-        root.after_idle(lambda:self.refresh(0))
+        root.after_idle(self.startup)
         root.after(120,self.poll)
 
     def guard(self,fn):
@@ -230,45 +243,87 @@ class Studio:
 
     def refresh_detail(self):
         self.routes.delete(0,'end')
-        self.canvas.delete('all')
         if not self.regions.curselection():
             self.detail.config(text='添加地区或从 GPX 建立地区'); self.map_title.config(text='覆盖范围')
             self.budget_label.config(text='FR255 预算 180 张底图 / 15 MB 安装文件')
+            self.preview.scene([],[])
             return
         r=self.project['regions'][self.index()]
         for t in r['routes']: self.routes.insert('end',t['name'])
         self.map_title.config(text=r['name'])
-        w=max(360,self.canvas.winfo_width()-8); h=max(210,self.canvas.winfo_height()-8)
         source = project_source(self.project)
-        image,hits=preview_image(r,self.settings['cache'],(w,h),source=source)
-        self.photo=ImageTk.PhotoImage(image,master=self.root)
-        self.canvas.create_image(w/2,h/2,image=self.photo)
-        label='缓存底图' if hits else '范围示意图，可载入底图'
+        routes = [segment for route in r['routes'] for segment in RouteDocument.load(route['gpx']).segments]
+        base = layer_grids(r['lat'],r['lon'],r['km'])[0]
+        coverage = (base['origin_x'],base['origin_y'],base['origin_x']+base['cols']*512,base['origin_y']+base['rows']*512)
+        self.preview.set_source(source)
+        changed_region = self.preview_region!=r['id']
+        self.preview.scene(routes,r.get('waypoints',[]),coverage)
+        self.preview.fit_coordinates = [geographic(coverage[0],coverage[1]),geographic(coverage[2],coverage[3])]
+        if changed_region:
+            self.preview.fit_all()
+        self.preview_region = r['id']
         credit = source.credit if source else HOT_CREDIT
         pairing = '预览 / 离线 / 在线共用图源' if source else '旧项目配置，离线为 HOT'
-        self.detail.config(text=f"{r['lat']:.4f}°, {r['lon']:.4f}°   ·   {r['km']:g} km   ·   {label}\n{credit} · {pairing}")
+        self.detail.config(text=f"{r['lat']:.4f}°, {r['lon']:.4f}°   ·   {r['km']:g} km · {len(r.get('waypoints',[]))} 个地点\n{credit} · {pairing}")
         budget = project_budget(self.project,Path.cwd(),self.settings['cache'])
-        self.budget_label.config(text=f"FR255 底图 {budget['images']}/180 张 · 待下载 {budget['download_tiles']} 张瓦片\n"
+        self.budget_label.config(text=f"手表地图资源 {budget['images']}/180 张 · 完整离线包还需下载 {budget['download_tiles']} 张瓦片\n"
                                 f"底图未压缩总量约 {budget['bitmap_bytes']/1024/1024:.1f} MiB · 安装文件限 15 MB（编译后核验）")
 
     def changed(self):
         self.dirty=True
         self.status.config(text='项目有未保存的修改')
+        if self.autosave_job:
+            self.root.after_cancel(self.autosave_job)
+        self.autosave_job = self.root.after(1200,self.autosave)
+
+    def startup(self):
+        try:
+            if self.recovery_path.exists() and messagebox.askyesno('恢复项目','恢复上次未保存的地图项目？',parent=self.root):
+                self.project = load_project(self.recovery_path)
+                original = self.project.pop('_studio_path','')
+                self.path = Path(original) if original else None
+                self.dirty = True
+                self.status.config(text='已恢复项目草稿，请保存项目')
+        except Exception as exc:
+            messagebox.showinfo('项目草稿',str(exc),parent=self.root)
+        self.refresh(0)
+
+    def autosave(self):
+        self.autosave_job = None
+        snapshot = copy.deepcopy(self.project)
+        snapshot['_studio_path'] = str(self.path or '')
+        try:
+            self.recovery_path.parent.mkdir(parents=True,exist_ok=True)
+            save_project(snapshot,self.recovery_path)
+            self.status.config(text='项目草稿已保存')
+            return True
+        except Exception as exc:
+            self.status.config(text='项目草稿保存失败 '+str(exc))
+            return False
+
+    def clear_autosave(self):
+        if self.autosave_job:
+            self.root.after_cancel(self.autosave_job)
+            self.autosave_job = None
+        self.recovery_path.unlink(missing_ok=True)
 
     def can_replace(self):
-        return not self.dirty or messagebox.askyesno('项目尚未保存','放弃当前项目的修改？',parent=self.root)
+        accepted = not self.dirty or messagebox.askyesno('项目尚未保存','放弃当前项目的修改？',parent=self.root)
+        if accepted:
+            self.clear_autosave()
+        return accepted
 
     def new(self):
         if self.can_replace():
             self.project={'version':1,'regions':[]}; self.path=None; self.dirty=False
-            self.refresh(); self.status.config(text='新项目')
+            self.preview_region=None; self.refresh(); self.status.config(text='新项目')
 
     def open(self):
         path=filedialog.askopenfilename(filetypes=[('地图项目','*.json')])
         if path and self.can_replace():
             obj=load_project(path)
             self.project=obj; self.path=Path(path); self.dirty=False
-            self.refresh(); self.status.config(text=self.path.name)
+            self.preview_region=None; self.refresh(); self.status.config(text=self.path.name)
 
     def save(self):
         path=filedialog.asksaveasfilename(initialfile=self.path.name if self.path else '地图项目.json',
@@ -276,10 +331,11 @@ class Studio:
         if path:
             save_project(self.project,path)
             self.path=Path(path); self.dirty=False; self.status.config(text='已保存 '+self.path.name)
+            self.clear_autosave()
 
     def close(self):
         if self.busy: messagebox.showinfo('正在处理','请等待当前任务结束',parent=self.root); return
-        if self.can_replace(): self.root.destroy()
+        if not self.dirty or self.autosave(): self.root.destroy()
 
     def form(self,title,fields,apply):
         dlg=tk.Toplevel(self.root); dlg.title(title); dlg.transient(self.root); dlg.grab_set()
@@ -311,7 +367,7 @@ class Studio:
             proposed=list(regions)
             if new: proposed.append(updated)
             else: proposed[target]=updated
-            prepare({**self.project,'regions':proposed},Path.cwd())
+            prepare({**self.project,'regions':proposed},Path.cwd(),editing=True)
             self.project['regions']=proposed; self.changed(); self.refresh(target)
         self.form('地图地区',[(k,l,region[k],None) for k,l in
                   [('name','名称'),('lat','中心纬度 WGS84'),('lon','中心经度 WGS84'),('km','区域边长（公里）')]],accept)
@@ -320,8 +376,10 @@ class Studio:
         path=filedialog.askopenfilename(filetypes=[('GPX 路线','*.gpx')])
         if not path: return
         lat,lon,km=region_from_gpx(path)
+        document=RouteDocument.load(path)
         route=self.make_route(path)
-        self.edit_region(True,dict(id=new_id('m'),name=route['name'],lat=round(lat,6),lon=round(lon,6),km=km,routes=[route]))
+        self.edit_region(True,dict(id=new_id('m'),name=route['name'],lat=round(lat,6),lon=round(lon,6),km=km,
+                                  routes=[route] if document.segments else [],waypoints=document.waypoints))
 
     @staticmethod
     def make_route(path):
@@ -333,62 +391,71 @@ class Studio:
         paths=filedialog.askopenfilenames(filetypes=[('GPX 路线','*.gpx')])
         if not paths: return
         proposed=copy.deepcopy(self.project)
-        proposed['regions'][index]['routes'].extend(self.make_route(p) for p in paths)
-        prepare(proposed,Path.cwd())
+        region=proposed['regions'][index]
+        for path in paths:
+            document=RouteDocument.load(path)
+            if document.segments:
+                region['routes'].append(self.make_route(path))
+            region['waypoints']=merge_waypoints(region.get('waypoints',[]),document.waypoints)
+        prepare(proposed,Path.cwd(),editing=True)
         self.project=proposed; self.changed(); self.refresh(index)
 
     def draw_route(self):
-        index=self.index()
-        region=self.project['regions'][index]
-        image,_=preview_image(region,self.settings['cache'],(640,420),source=project_source(self.project))
-        dlg=tk.Toplevel(self.root); dlg.title('手绘路线 · '+region['name'])
-        dlg.transient(self.root); dlg.grab_set()
-        ttk.Label(dlg,text='依次点击途经点，相邻点以直线相连。').pack(anchor='w',padx=12,pady=8)
-        canvas=tk.Canvas(dlg,width=image.width,height=image.height,highlightthickness=0,cursor='crosshair')
-        canvas.pack(padx=12)
-        photo=ImageTk.PhotoImage(image,master=dlg)
-        canvas.create_image(0,0,anchor='nw',image=photo); canvas.photo=photo
-        points=[]
-        def redraw():
-            canvas.delete('draft')
-            if len(points)>=2:
-                canvas.create_line(*[v for pair in points for v in pair],fill='#aa381d',width=3,tags='draft')
-            for x,y in points:
-                canvas.create_oval(x-3,y-3,x+3,y+3,fill='#aa381d',outline='white',tags='draft')
-        def click(e):
-            if 0 <= e.x < image.width and 0 <= e.y < image.height:
-                points.append((e.x,e.y)); redraw()
-        canvas.bind('<Button-1>',click)
-        row=ttk.Frame(dlg,padding=12); row.pack(fill='x')
-        name=tk.StringVar(dlg,value='手绘路线')
-        ttk.Entry(row,textvariable=name,width=19).pack(side='left')
-        def undo():
-            if points: points.pop(); redraw()
-        ttk.Button(row,text='撤销一点',command=undo).pack(side='left',padx=4)
-        def save():
-            try:
-                route=dict(id=new_id('t'),name=name.get().strip())
-                validate_label(route)
-                coords=[canvas_location(region,x,y,image.width,image.height) for x,y in points]
+        self.edit_map(False)
+
+    def edit_map(self, existing=False, mode='画路线'):
+        index = self.index()
+        region = self.project['regions'][index]
+        selection = self.routes.curselection()
+        route_index = selection[0] if existing and selection else None
+        if existing and route_index is None:
+            raise ValueError('请先选择要编辑的路线')
+        route = region['routes'][route_index] if route_index is not None else None
+        document = RouteDocument.load(route['gpx']) if route else RouteDocument()
+        document.name = route['name'] if route else '新路线'
+        if 'waypoints' in region:
+            document.waypoints = copy.deepcopy(region['waypoints'])
+        identity = str(self.path or 'unsaved')+'/'+region['id']+'/'+(route['id'] if route else 'new')
+        draft = DraftStore(app_data(),identity)
+        base = layer_grids(region['lat'],region['lon'],region['km'])[0]
+        coverage = (base['origin_x'],base['origin_y'],base['origin_x']+base['cols']*512,base['origin_y']+base['rows']*512)
+        background = [segment for item in region['routes'] for segment in RouteDocument.load(item['gpx']).segments]
+
+        def apply(edited, window):
+            proposed = copy.deepcopy(self.project)
+            target_region = proposed['regions'][index]
+            target_region['waypoints'] = copy.deepcopy(edited.waypoints)
+            if not edited.segments:
+                if route_index is not None:
+                    del target_region['routes'][route_index]
+            else:
+                updated = dict(route) if route else dict(id=new_id('t'))
+                updated['name'] = edited.name
+                validate_label(updated)
+                data = edited.export()
                 with tempfile.TemporaryDirectory() as folder:
-                    scratch=Path(folder)/'route.gpx'
-                    write_route(scratch,route['name'],coords)
-                    proposed=copy.deepcopy(self.project)
-                    route['gpx']=str(scratch)
-                    proposed['regions'][index]['routes'].append(route)
-                    prepare(proposed,Path.cwd())
-                    dest=filedialog.asksaveasfilename(parent=dlg,initialfile=route['name']+'.gpx',defaultextension='.gpx')
-                    if not dest: return
-                    target=Path(dest)
-                    with tempfile.NamedTemporaryFile(dir=target.parent,delete=False) as f:
-                        temp=Path(f.name); f.write(scratch.read_bytes())
-                    try: os.replace(temp,target)
-                    finally: temp.unlink(missing_ok=True)
-                    route['gpx']=str(target.resolve())
-                    self.project=proposed
-                dlg.destroy(); self.changed(); self.refresh(index)
-            except Exception as e: messagebox.showerror('保存路线失败',str(e),parent=dlg)
-        ttk.Button(row,text='保存 GPX 并加入项目',command=save).pack(side='right')
+                    scratch = Path(folder)/'edited.gpx'
+                    scratch.write_bytes(data)
+                    updated['gpx'] = str(scratch)
+                    if route_index is None:
+                        target_region['routes'].append(updated)
+                    else:
+                        target_region['routes'][route_index] = updated
+                    prepare(proposed,Path.cwd(),editing=True)
+                    destination = filedialog.asksaveasfilename(parent=window,
+                        initialfile=edited.name+'-编辑.gpx',defaultextension='.gpx',
+                        filetypes=[('GPX 路线和地点','*.gpx')])
+                    if not destination:
+                        return False
+                    atomic_write(destination,data)
+                    updated['gpx'] = str(Path(destination).resolve())
+            self.project = proposed
+            self.changed()
+            self.refresh(index)
+            return True
+
+        RouteEditor(self.root,document,self.settings['cache'],project_source(self.project),
+                    coverage,draft,apply,background,mode='编辑节点' if existing else mode)
 
     def remove_region(self):
         n=self.index()
@@ -529,10 +596,7 @@ class Studio:
         threading.Thread(target=worker,daemon=True).start()
 
     def fetch_preview(self):
-        r=copy.deepcopy(self.project['regions'][self.index()])
-        cache=self.settings['cache']
-        source=project_source(self.project)
-        self.job('正在载入预览底图',lambda:(preview_image(r,cache,(480,320),True,source),'预览底图已缓存')[1])
+        self.preview.load_view()
 
     def start_build(self):
         obj=copy.deepcopy(self.project)
@@ -546,9 +610,11 @@ class Studio:
             self.configure(); return
         output=filedialog.asksaveasfilename(initialfile='FR255-离线地图.zip',defaultextension='.zip')
         if output:
+            budget = project_budget(obj,Path.cwd(),v['cache'])
+            self.build_transfer = DownloadProgress(budget['source_tiles'])
             def task():
                 meta=build(obj,Path.cwd(),output,v['sdk'],v['java'],v['key'],v['cache'],
-                           lambda s:self.events.put(('log',s)),devices=v['devices'])
+                           lambda s:self.events.put(('log',s)),devices=v['devices'],transfer=self.build_transfer)
                 return f"已生成 {output}（{meta['bytes']:,} 字节）"
             self.job('正在生成安装包',task)
 
@@ -560,9 +626,13 @@ class Studio:
                     self.log.config(state='normal'); self.log.insert('end',value+'\n'); self.log.see('end'); self.log.config(state='disabled')
                 else:
                     self.busy=False; self.status.config(text=value if kind=='ok' else '操作未完成')
+                    if self.build_transfer is not None:
+                        self.build_transfer.set_stage('制包完成' if kind=='ok' else '制包失败')
                     if kind=='error': messagebox.showerror('操作未完成',value,parent=self.root)
                     else: self.guard(self.refresh_detail)
         except queue.Empty: pass
+        if self.build_transfer is not None:
+            self.download_status.config(text=self.build_transfer.text())
         self.root.after(120,self.poll)
 
 

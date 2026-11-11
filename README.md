@@ -4,7 +4,7 @@
 
 **先看 [迭代计划](docs/ROADMAP.md)、[设备与方案调研](docs/RESEARCH.md)、[验证标准](docs/VALIDATION.md)、[版本记录](CHANGELOG.md)。**
 
-当前候选版 **v0.7.0-alpha.1** 提供 Windows 桌面制包器，可选地区、导入或手绘 GPX 并生成 FR255 安装 ZIP。「地图图源」可选择 MapTiler 街道、户外或自定义 HTTPS XYZ，将预览、离线制包与在线请求统一。新图源使用 16 色与隔离缓存，检查离线授权、瓦片规格、180 张地图资源和 15 MB 安装预算。旧项目保持原图源设置。见 [制包器说明](docs/STUDIO.md) 和 [手表操作](docs/INSTALL-V05.md)。
+当前候选版 **v0.8.0-alpha.3** 提供可缩放和平移的桌面地图、路线节点编辑、撤销重做、GPX 地点标注和草稿恢复。预览与制包显示实时下载速度、接收大小、瓦片进度和等待重试状态，切换视野时取消旧请求重试。地点可选择同步到 FR255，手表提供列表、备注和地图跳转。「地图图源」可选择 MapTiler 街道、户外或自定义 HTTPS XYZ。制包检查坐标、授权、180 张地图资源和 15 MB 安装预算。见 [制包器说明](docs/STUDIO.md) 和 [手表操作](docs/INSTALL-V05.md)。
 
 v0.4.0-alpha.1 已交付街道/概览双级地图、比例尺及缩放按键模式。见 [v0.4 验证报告](docs/verification-v0.4-alpha.1.md)。
 
@@ -69,6 +69,7 @@ GitHub CI 运行不联网的 Python 测试、语法/XML 和提交内容检查。
 - `iteration/v0.5-packs`：桌面制包器、地区及 GPX 切换。
 - `iteration/v0.6-hybrid`：可选在线底图与离线回退，见 [验证记录](docs/verification-v0.6-alpha.1.md)。
 - `iteration/v0.7-sources`：统一地图图源、样式、署名与制包预算。
+- `iteration/v0.8-editor`：交互地图、路线编辑、地点标注和草稿恢复。
 - 迭代在自己的 fork 内审查，不自动向上游提 PR。
 - 只提交源码、测试与文档；排除私钥、SDK、生成底图、个人 GPX/FIT 和本地日志。
 
