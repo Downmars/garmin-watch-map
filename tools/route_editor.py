@@ -23,7 +23,6 @@ class RouteEditor:
         self.background = background or []
         self.selected = None
         self.before_drag = None
-        self.active_segment = max(0,len(document.segments)-1)
         self.draft_job = None
         try:
             recovered = draft.load()
@@ -31,6 +30,7 @@ class RouteEditor:
                 self.document = recovered
         except Exception as exc:
             messagebox.showinfo('草稿读取失败',str(exc),parent=self.root)
+        self.active_segment = max(0,len(self.document.segments)-1)
         self.history = EditorHistory(self.document)
         self.name = tk.StringVar(self.root,value=self.document.name)
         toolbar = ttk.Frame(self.root,padding=8)
@@ -155,10 +155,11 @@ class RouteEditor:
 
     def nearest(self, x, y):
         candidates = []
-        for segment_index,segment in enumerate(self.document.segments):
-            for index,point in enumerate(segment):
-                px,py = self.map.viewport.screen(*point)
-                candidates.append(((px-x)**2+(py-y)**2,('point',segment_index,index)))
+        if self.mode.get() != '地点':
+            for segment_index,segment in enumerate(self.document.segments):
+                for index,point in enumerate(segment):
+                    px,py = self.map.viewport.screen(*point)
+                    candidates.append(((px-x)**2+(py-y)**2,('point',segment_index,index)))
         for index,item in enumerate(self.document.waypoints):
             px,py = self.map.viewport.screen(item['lat'],item['lon'])
             candidates.append(((px-x)**2+(py-y)**2,('waypoint',index)))
@@ -211,6 +212,8 @@ class RouteEditor:
                     self.selected = ('point',best[1],best[2])
                     self.changed(before)
             self.before_drag = self.document.snapshot()
+            if self.selected and self.selected[0]=='point':
+                self.active_segment = self.selected[1]
             self.show_properties()
             self.refresh()
         elif phase == 'drag' and self.selected and self.before_drag:

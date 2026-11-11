@@ -14,6 +14,7 @@ import atlas
 from atlas_studio import EXAMPLE, Studio, load_project, save_project
 from map_canvas import Viewport, world_point
 from map_source import project_source
+from route_editor import RouteEditor
 from route_document import DraftStore, EditorHistory, RouteDocument, atomic_write, merge_waypoints, waypoint
 
 
@@ -151,6 +152,19 @@ class EditorTests(unittest.TestCase):
             draft.save(RouteDocument('新草稿'))
             self.assertEqual(next(draft.path.parent.glob('*.invalid')).read_bytes(),original)
             self.assertEqual(draft.load().name,'新草稿')
+
+    def test_place_mode_selects_marker_at_route_vertex_without_creating_duplicate(self):
+        editor = RouteEditor.__new__(RouteEditor)
+        editor.document = RouteDocument('路线',[[(34.5,109.5),(34.501,109.501)]],
+                                        [waypoint(34.5,109.5,'路口')])
+        editor.mode = Mock()
+        editor.map = Mock()
+        editor.map.viewport = Viewport(34.5,109.5)
+        x,y = editor.map.viewport.screen(34.5,109.5)
+        editor.mode.get.return_value = '地点'
+        self.assertEqual(editor.nearest(x,y),('waypoint',0))
+        editor.mode.get.return_value = '编辑节点'
+        self.assertEqual(editor.nearest(x,y),('point',0,0))
 
     def test_waypoint_package_filters_sync_and_checks_watch_bounds_before_build(self):
         project = load_project(EXAMPLE)
