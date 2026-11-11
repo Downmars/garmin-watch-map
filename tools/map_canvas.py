@@ -10,6 +10,7 @@ from tkinter import ttk
 from PIL import Image, ImageTk
 from make_city_pack import fetch_tile
 from map_source import quantize
+from download_progress import DownloadCancelled, DownloadProgress
 
 WORLD = 256 << 15
 
@@ -92,6 +93,7 @@ class MapCanvas(ttk.Frame):
         self.images = OrderedDict()
         self.tk_images = {}
         self.last_error = None
+        self.transfer = None
         self.photos = []
         self.results = queue.Queue()
         self.requests = queue.Queue(maxsize=1)
@@ -108,6 +110,8 @@ class MapCanvas(ttk.Frame):
             ttk.Button(controls,text=label,command=command).pack(side='left',padx=2)
         self.message = ttk.Label(controls,text='滚轮缩放 · 拖动平移',width=42)
         self.message.pack(side='left',padx=8)
+        self.transfer_label = ttk.Label(self,wraplength=600)
+        self.transfer_label.pack(fill='x',padx=4)
         self.canvas = tk.Canvas(self,bg='#e5eae5',highlightthickness=0,width=640,height=420)
         self.canvas.pack(fill='both',expand=True)
         self.canvas.bind('<Configure>',self.resize)
@@ -128,6 +132,8 @@ class MapCanvas(ttk.Frame):
     def destroyed(self, event):
         if event.widget == self:
             self.closed = True
+            if self.transfer is not None:
+                self.transfer.cancel()
             self.generation += 1
             self.after_cancel(self.poll_job)
             if self.redraw_job:
@@ -165,6 +171,7 @@ class MapCanvas(ttk.Frame):
 
     def resize(self, event):
         self.viewport.width,self.viewport.height = max(100,event.width),max(100,event.height)
+        self.transfer_label.config(wraplength=max(100,event.width-8))
         if not self.resized:
             self.viewport.fit(self.fit_coordinates)
             self.resized = True
@@ -212,25 +219,35 @@ class MapCanvas(ttk.Frame):
     def worker(self):
         while not self.closed:
             try:
-                generation,keys,source,download,zoom = self.requests.get(timeout=.5)
+                generation,keys,source,download,zoom,transfer = self.requests.get(timeout=.5)
             except queue.Empty:
                 continue
             memory = {}
+            failed = False
+            transfer.set_stage('查找本地缓存')
             for key in keys:
                 if self.closed or generation != self.generation:
                     break
                 try:
                     fetch = download and key[0] == zoom
+                    tile_transfer = transfer if key[0] == zoom else None
                     if source:
-                        image = source.fetch(*key,memory,self.cache,allow_download=fetch,preview=True)
+                        image = source.fetch(*key,memory,self.cache,allow_download=fetch,preview=True,transfer=tile_transfer)
                     else:
                         path = self.cache/str(key[0])/str(key[1])/f'{key[2]}.png'
-                        image = fetch_tile(*key,memory,cache_dir=str(self.cache)) if fetch or path.exists() else None
+                        image = fetch_tile(*key,memory,cache_dir=str(self.cache),transfer=tile_transfer,retries=1,timeout=10) if fetch or path.exists() else None
                     self.results.put((generation,key,image,None))
+                except DownloadCancelled:
+                    failed = True
+                    break
                 except Exception as exc:
+                    failed = True
+                    transfer.set_stage('加载失败，可点载入重试')
                     self.results.put((generation,key,None,str(exc)))
                     if download:
                         break
+            if not failed:
+                transfer.set_stage('视野加载结束')
 
     def poll(self):
         changed = False
@@ -255,6 +272,8 @@ class MapCanvas(ttk.Frame):
             self.last_error = error
         if changed or error:
             self.redraw()
+        if self.transfer is not None:
+            self.transfer_label.config(text=self.transfer.text())
         if not self.closed:
             self.poll_job = self.after(80,self.poll)
 
@@ -284,7 +303,14 @@ class MapCanvas(ttk.Frame):
                         parent_key = (parent_z,x//factor,y//factor)
                         if parent_key not in self.images:
                             parents.add(parent_key)
-            self.requests.put_nowait((self.generation,sorted(parents)+missing,self.source,self.auto_load,self.viewport.zoom))
+            if self.transfer is not None:
+                self.transfer.cancel()
+            self.transfer = DownloadProgress(len(keys))
+            self.transfer.set_stage('等待下载队列')
+            for key in keys:
+                if key in self.images:
+                    self.transfer.complete(key,cached=True)
+            self.requests.put_nowait((self.generation,sorted(parents)+missing,self.source,self.auto_load,self.viewport.zoom,self.transfer))
         for key in keys:
             z,x,y = key
             image = self.images.get(key)

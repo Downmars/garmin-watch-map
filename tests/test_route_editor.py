@@ -174,7 +174,7 @@ class EditorTests(unittest.TestCase):
         plan = atlas.prepare(project,Path.cwd())
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
-            def generate(app,out,cache,lat,lon,km,tag,progress,source=None):
+            def generate(app,out,cache,lat,lon,km,tag,progress,source=None,transfer=None):
                 (app/'resources/drawables').mkdir(parents=True)
                 (app/'source').mkdir()
                 (app/'source/MapData.mc').write_text('module MapData {}')

@@ -24,6 +24,7 @@ from make_multilevel_pack import layer_grids
 from map_canvas import MapCanvas, geographic
 from route_document import DraftStore, RouteDocument, atomic_write, merge_waypoints
 from route_editor import RouteEditor
+from download_progress import DownloadProgress
 
 EXAMPLE = ROOT/'examples/atlas.json'
 
@@ -169,6 +170,7 @@ class Studio:
         self.settings = settings_defaults()
         self.dirty = False
         self.busy = False
+        self.build_transfer = None
         self.events = queue.Queue()
         self.photo = None
         self.preview_region = None
@@ -207,6 +209,8 @@ class Studio:
         self.preview.pack(fill='both',expand=True,pady=(5,4))
         self.detail=ttk.Label(right,wraplength=540); self.detail.pack(anchor='w')
         self.budget_label=ttk.Label(right,wraplength=540); self.budget_label.pack(anchor='w',pady=(4,0))
+        self.download_status=ttk.Label(shell,wraplength=780)
+        self.download_status.pack(fill='x',pady=(4,0))
         self.log=tk.Text(shell,height=4,wrap='word',state='disabled')
         self.log.pack(fill='x',pady=(9,5))
         footer=ttk.Frame(shell); footer.pack(fill='x')
@@ -606,9 +610,11 @@ class Studio:
             self.configure(); return
         output=filedialog.asksaveasfilename(initialfile='FR255-离线地图.zip',defaultextension='.zip')
         if output:
+            budget = project_budget(obj,Path.cwd(),v['cache'])
+            self.build_transfer = DownloadProgress(budget['source_tiles'])
             def task():
                 meta=build(obj,Path.cwd(),output,v['sdk'],v['java'],v['key'],v['cache'],
-                           lambda s:self.events.put(('log',s)),devices=v['devices'])
+                           lambda s:self.events.put(('log',s)),devices=v['devices'],transfer=self.build_transfer)
                 return f"已生成 {output}（{meta['bytes']:,} 字节）"
             self.job('正在生成安装包',task)
 
@@ -620,9 +626,13 @@ class Studio:
                     self.log.config(state='normal'); self.log.insert('end',value+'\n'); self.log.see('end'); self.log.config(state='disabled')
                 else:
                     self.busy=False; self.status.config(text=value if kind=='ok' else '操作未完成')
+                    if self.build_transfer is not None:
+                        self.build_transfer.set_stage('制包完成' if kind=='ok' else '制包失败')
                     if kind=='error': messagebox.showerror('操作未完成',value,parent=self.root)
                     else: self.guard(self.refresh_detail)
         except queue.Empty: pass
+        if self.build_transfer is not None:
+            self.download_status.config(text=self.build_transfer.text())
         self.root.after(120,self.poll)
 
 

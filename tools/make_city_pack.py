@@ -19,6 +19,7 @@ import time
 import urllib.request
 
 from PIL import Image
+from download_progress import read_tile
 
 TILE_SIZE = 512
 Z_TILE = 256
@@ -35,9 +36,11 @@ def lat_to_y(lat, z):
     return (1.0 - math.log(math.tan(rad) + 1.0 / math.cos(rad)) / math.pi) / 2.0 * (Z_TILE << z)
 
 
-def fetch_tile(z, x, y, cache, retries=3, cache_dir=None):
+def fetch_tile(z, x, y, cache, retries=3, cache_dir=None, transfer=None, timeout=25):
     key = (z, x, y)
     if key in cache:
+        if transfer is not None:
+            transfer.complete(key,cached=True)
         return cache[key]
     disk = os.path.join(cache_dir, str(z), str(x), f"{y}.png") if cache_dir else None
     if disk and os.path.isfile(disk):
@@ -46,15 +49,21 @@ def fetch_tile(z, x, y, cache, retries=3, cache_dir=None):
             if saved.size != (Z_TILE, Z_TILE):
                 raise ValueError(f"Invalid cached tile size: {disk}")
             cache[key] = saved.convert("RGB")
+        if transfer is not None:
+            transfer.complete(key,cached=True)
         return cache[key]
     last = None
     for host in HOSTS:
         for attempt in range(retries):
+            if transfer is not None:
+                transfer.check_cancelled()
             url = f"https://{host}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png"
             try:
                 req = urllib.request.Request(url, headers={"User-Agent": UA})
-                with urllib.request.urlopen(req, timeout=25) as resp:
-                    img = Image.open(io.BytesIO(resp.read())).convert("RGB")
+                if transfer is not None:
+                    transfer.request()
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    img = Image.open(io.BytesIO(read_tile(resp,transfer))).convert("RGB")
                 if img.size != (Z_TILE, Z_TILE):
                     raise ValueError(f"Invalid tile size from {url}: {img.size}")
                 if disk:
@@ -62,9 +71,14 @@ def fetch_tile(z, x, y, cache, retries=3, cache_dir=None):
                     img.save(disk + ".tmp", "PNG")
                     os.replace(disk + ".tmp", disk)
                 cache[key] = img
+                if transfer is not None:
+                    transfer.complete(key)
                 time.sleep(0.25)
                 return img
             except Exception as exc:  # noqa: BLE001
+                if transfer is not None:
+                    transfer.check_cancelled()
+                    transfer.retry()
                 last = exc
                 time.sleep(1 + attempt)
     raise RuntimeError(f"Tile download failed {z}/{x}/{y}: {last}. Rerun to resume from cache.") from last

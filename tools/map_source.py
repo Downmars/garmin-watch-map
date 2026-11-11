@@ -12,6 +12,7 @@ import urllib.request
 from urllib.parse import quote, urlsplit
 
 from PIL import Image
+from download_progress import read_tile
 
 
 PALETTE = (0xFFFFFF, 0x000000, 0xEEEEEE, 0xCCCCCC, 0x999999, 0x666666,
@@ -74,9 +75,11 @@ class TileSource:
         if not self.offline_allowed:
             raise ValueError('此图源尚未确认离线使用授权。请在「地图图源」中核实并设置离线授权，或选择允许离线的图源。')
 
-    def fetch(self, z, x, y, memory, cache_dir, allow_download=True, preview=False):
+    def fetch(self, z, x, y, memory, cache_dir, allow_download=True, preview=False, transfer=None):
         key = (self.fingerprint, z, x, y, preview)
         if key in memory:
+            if transfer is not None:
+                transfer.complete((z,x,y),cached=True)
             return memory[key]
         temporary_preview = preview and not self.offline_allowed
         path = self.cache_path(Path(cache_dir)/'preview' if temporary_preview else cache_dir,z,x,y)
@@ -94,6 +97,8 @@ class TileSource:
                     if image.size != (256, 256):
                         raise ValueError('缓存瓦片尺寸无效，请删除此图源缓存后重试')
                     memory[key] = image.convert('RGB')
+                if transfer is not None:
+                    transfer.complete((z,x,y),cached=True)
                 return memory[key]
             except OSError:
                 raise ValueError('缓存瓦片损坏，请删除此图源缓存后重试') from None
@@ -104,13 +109,15 @@ class TileSource:
         url = self.url.format(z=z, x=x, y=y)
         error = '网络错误'
         for attempt in range(3):
+            if transfer is not None:
+                transfer.check_cancelled()
             try:
                 request = urllib.request.Request(url, headers={'User-Agent': USER_AGENT})
-                with urllib.request.urlopen(request, timeout=25) as response:
-                    data = response.read(4 * 1024 * 1024 + 1)
+                if transfer is not None:
+                    transfer.request()
+                with urllib.request.urlopen(request, timeout=10 if preview else 25) as response:
+                    data = read_tile(response,transfer)
                     cache_control = getattr(response,'headers',{}).get('Cache-Control','')
-                if len(data) > 4 * 1024 * 1024:
-                    raise ValueError('瓦片超过 4 MB，请选择普通 256px 图片')
                 with Image.open(io.BytesIO(data)) as image:
                     if image.size != (256, 256):
                         raise ValueError('图源必须返回 256×256 图片，请检查尺寸和缩放设置')
@@ -132,11 +139,16 @@ class TileSource:
                             seconds = 0
                         expiry.write_text(str(time.time()+seconds),encoding='ascii')
                 memory[key] = result
+                if transfer is not None:
+                    transfer.complete((z,x,y))
                 time.sleep(0.25)
                 return result
             except ValueError:
                 raise
             except Exception as exc:
+                if transfer is not None:
+                    transfer.check_cancelled()
+                    transfer.retry()
                 # HTTP exceptions may contain a private key in their URL.
                 code = getattr(exc, 'code', None)
                 error = f'HTTP {code}' if code else type(exc).__name__

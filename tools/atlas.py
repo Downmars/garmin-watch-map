@@ -21,7 +21,7 @@ from route_document import RouteDocument, validate_waypoints
 from gpx_route import project as project_point
 
 ROOT = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parents[1]))
-VERSION = '0.8.0-alpha.1'
+VERSION = '0.8.0-alpha.3'
 MAX_IMAGES = 180
 MAX_BYTES = 15_000_000
 
@@ -133,7 +133,7 @@ def prepare(project, folder, editing=False):
     return summary
 
 
-def create_app(app, scratch, cache, plan, progress, source=None):
+def create_app(app, scratch, cache, plan, progress, source=None, transfer=None):
     (app/'source').mkdir(parents=True)
     drawables = app/'resources/drawables'
     drawables.mkdir(parents=True)
@@ -156,7 +156,7 @@ def create_app(app, scratch, cache, plan, progress, source=None):
         tag = f'r{i}_'
         progress(f"制作 {region['name']} 底图")
         generate(part, scratch/'tiles', cache, region['lat'], region['lon'], region['km'],
-                 tag, progress, source=source)
+                 tag, progress, source=source,transfer=transfer)
         for item in ET.parse(part/'resources/drawables/drawables.xml').getroot():
             if item.get('id') != 'LauncherIcon':
                 name = item.get('filename')
@@ -280,7 +280,7 @@ def run_tool(args, cwd, progress):
             raise ValueError('Garmin 工具执行失败\n'+(first_error or '\n'.join(tail)))
 
 
-def build(project, folder, output, sdk, java, key, cache, progress=print, test=False, devices=None):
+def build(project, folder, output, sdk, java, key, cache, progress=print, test=False, devices=None, transfer=None):
     plan = prepare(project, folder)
     source = project_source(project)
     if source is not None:
@@ -298,7 +298,7 @@ def build(project, folder, output, sdk, java, key, cache, progress=print, test=F
     with tempfile.TemporaryDirectory(prefix='atlas-',dir=output.parent) as private:
         scratch = Path(private)
         app = scratch/'app'
-        create_app(app,scratch,Path(cache).resolve(),plan,progress,source=source)
+        create_app(app,scratch,Path(cache).resolve(),plan,progress,source=source,transfer=transfer)
         online=online_config(project)
         configure_network(app,online)
         prg = scratch/'weinan-fr255.prg'  # Same filename as earlier sideloads.
@@ -310,6 +310,8 @@ def build(project, folder, output, sdk, java, key, cache, progress=print, test=F
                 f.write('\nbase.sourcePath = source;tests\n')
             args.append('-t')
         progress("正在编译 FR255 应用")
+        if transfer is not None:
+            transfer.set_stage('正在编译 FR255 应用')
         run_tool(args,app,progress)
         if not prg.is_file() or prg.stat().st_size > MAX_BYTES:
             raise ValueError("PRG 超过 15 MB 预算，请缩小地区")
